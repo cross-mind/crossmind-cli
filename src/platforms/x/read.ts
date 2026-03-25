@@ -2,13 +2,24 @@
  * X (Twitter) read operations.
  *
  * Auth priority:
- *   1. Cookie (auth_token + ct0) → GraphQL API (x.com/i/api/graphql)
+ *   1. Cookie (auth_token + ct0) → twitter-cli bridge (curl_cffi Chrome TLS)
  *   2. Bearer / OAuth token      → v2 REST API (api.twitter.com/2)
  *   3. No credentials            → v2 REST with public bearer (search only)
+ *
+ * Note: x.com/i/api/graphql requires Chrome TLS fingerprinting. Node.js's
+ * fetch() is rejected (404). The bridge delegates to twitter-cli which uses
+ * curl_cffi for proper Chrome impersonation.
  */
 
-import { xRequest, xGqlGet, type XCredentials } from '../../http/x-client.js';
+import { xRequest, type XCredentials } from '../../http/x-client.js';
 import { loadXCredentials } from '../../auth/x.js';
+import {
+  isTwitterCliAvailable,
+  bridgeSearchTweets,
+  bridgeFeed,
+  bridgeUserTimeline,
+  bridgeUserProfile,
+} from '../../http/x-bridge.js';
 
 export interface XTweet {
   rank: number;
@@ -59,64 +70,6 @@ function mapTweetRest(tweet: Record<string, unknown>, author: Record<string, unk
   };
 }
 
-// ── GraphQL response parsers ───────────────────────────────────────────────
-
-/** Extract tweets from GraphQL timeline instruction entries. */
-function parseTweetEntries(entries: unknown[]): XTweet[] {
-  const tweets: XTweet[] = [];
-  for (const entry of entries) {
-    const e = entry as Record<string, unknown>;
-    const content = e['content'] as Record<string, unknown> | undefined;
-    if (!content) continue;
-
-    const itemContent = content['itemContent'] as Record<string, unknown> | undefined;
-    if (!itemContent) continue;
-
-    const tweetResults = itemContent['tweet_results'] as Record<string, unknown> | undefined;
-    if (!tweetResults) continue;
-
-    const result = tweetResults['result'] as Record<string, unknown> | undefined;
-    if (!result || result['__typename'] !== 'Tweet') continue;
-
-    const legacy = result['legacy'] as Record<string, unknown> | undefined;
-    if (!legacy) continue;
-
-    const core = result['core'] as Record<string, unknown> | undefined;
-    const userResult = (core?.['user_results'] as Record<string, unknown>)?.['result'] as Record<string, unknown> | undefined;
-    const userLegacy = userResult?.['legacy'] as Record<string, unknown> | undefined;
-    const username = String(userLegacy?.['screen_name'] ?? '');
-    const id = String(result['rest_id'] ?? '');
-    const views = (result['views'] as Record<string, unknown>)?.['count'];
-
-    tweets.push({
-      rank: tweets.length + 1,
-      id,
-      text: String(legacy['full_text'] ?? '').replace(/\n/g, ' ').slice(0, 200),
-      author: username,
-      likes: Number(legacy['favorite_count'] ?? 0),
-      retweets: Number(legacy['retweet_count'] ?? 0),
-      replies: Number(legacy['reply_count'] ?? 0),
-      views: views !== undefined ? Number(views) : 0,
-      created_at: String(legacy['created_at'] ?? '').slice(0, 16),
-      url: buildTweetUrl(username, id),
-    });
-  }
-  return tweets;
-}
-
-/** Extract tweets from GraphQL timeline instructions array. */
-function parseTimelineInstructions(instructions: unknown[]): XTweet[] {
-  const tweets: XTweet[] = [];
-  for (const instruction of instructions) {
-    const inst = instruction as Record<string, unknown>;
-    if (inst['type'] === 'TimelineAddEntries') {
-      const entries = (inst['entries'] as unknown[]) ?? [];
-      tweets.push(...parseTweetEntries(entries));
-    }
-  }
-  return tweets;
-}
-
 // ── Credential resolution ──────────────────────────────────────────────────
 
 /** Returns true if cookie auth is available. */
@@ -135,25 +88,9 @@ export async function searchTweets(
 ): Promise<XTweet[]> {
   const creds = await loadXCredentials(account, dataDir);
 
-  // Cookie auth → GraphQL SearchTimeline
-  if (hasCookieAuth(creds)) {
-    const resp = await xGqlGet<Record<string, unknown>>(
-      'SearchTimeline',
-      {
-        rawQuery: query,
-        count: Math.min(limit, 20),
-        querySource: 'typed_query',
-        product: 'Latest',
-      },
-      creds
-    );
-    const instructions = (
-      (((resp['data'] as Record<string, unknown>)
-        ?.['search_by_raw_query'] as Record<string, unknown>)
-        ?.['search_timeline'] as Record<string, unknown>)
-        ?.['timeline'] as Record<string, unknown>)
-        ?.['instructions'] as unknown[] ?? [];
-    return parseTimelineInstructions(instructions).slice(0, limit);
+  // Cookie auth → twitter-cli bridge (Chrome TLS via curl_cffi)
+  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+    return bridgeSearchTweets(query, limit, creds);
   }
 
   // Token / no-auth → v2 REST
@@ -192,40 +129,9 @@ export async function getUserTimeline(
 ): Promise<XTweet[]> {
   const creds = await loadXCredentials(account, dataDir);
 
-  // Cookie auth → GraphQL UserTweets
-  if (hasCookieAuth(creds)) {
-    // First, resolve userId via UserByScreenName
-    const profileResp = await xGqlGet<Record<string, unknown>>(
-      'UserByScreenName',
-      { screen_name: username, withSafetyModeUserFields: true },
-      creds
-    );
-    const userResult = ((profileResp['data'] as Record<string, unknown>)
-      ?.['user'] as Record<string, unknown>)
-      ?.['result'] as Record<string, unknown> | undefined;
-    const userId = String(userResult?.['rest_id'] ?? '');
-
-    if (!userId) return [];
-
-    const resp = await xGqlGet<Record<string, unknown>>(
-      'UserTweets',
-      {
-        userId,
-        count: Math.min(limit, 20),
-        includePromotedContent: false,
-        withQuotedTweets: false,
-      },
-      creds
-    );
-
-    const instructions = (
-      ((((resp['data'] as Record<string, unknown>)
-        ?.['user'] as Record<string, unknown>)
-        ?.['result'] as Record<string, unknown>)
-        ?.['timeline_v2'] as Record<string, unknown>)
-        ?.['timeline'] as Record<string, unknown>)
-        ?.['instructions'] as unknown[] ?? [];
-    return parseTimelineInstructions(instructions).slice(0, limit);
+  // Cookie auth → twitter-cli bridge
+  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+    return bridgeUserTimeline(username, limit, creds);
   }
 
   // v2 REST path
@@ -257,30 +163,9 @@ export async function getUserProfile(
 ): Promise<XUser | null> {
   const creds = await loadXCredentials(account, dataDir);
 
-  // Cookie auth → GraphQL UserByScreenName
-  if (hasCookieAuth(creds)) {
-    const resp = await xGqlGet<Record<string, unknown>>(
-      'UserByScreenName',
-      { screen_name: username, withSafetyModeUserFields: true },
-      creds
-    );
-    const result = ((resp['data'] as Record<string, unknown>)
-      ?.['user'] as Record<string, unknown>)
-      ?.['result'] as Record<string, unknown>;
-    if (!result) return null;
-    const legacy = result['legacy'] as Record<string, unknown> ?? {};
-    const screen_name = String(legacy['screen_name'] ?? username);
-    return {
-      rank: 1,
-      username: screen_name,
-      name: String(legacy['name'] ?? ''),
-      followers: Number(legacy['followers_count'] ?? 0),
-      following: Number(legacy['friends_count'] ?? 0),
-      tweets: Number(legacy['statuses_count'] ?? 0),
-      bio: String(legacy['description'] ?? '').slice(0, 160),
-      verified: String(legacy['verified'] ?? false),
-      url: `https://twitter.com/${screen_name}`,
-    };
+  // Cookie auth → twitter-cli bridge
+  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+    return bridgeUserProfile(username, creds);
   }
 
   // v2 REST path
@@ -315,26 +200,9 @@ export async function getHomeTimeline(
 ): Promise<XTweet[]> {
   const creds = await loadXCredentials(account, dataDir);
 
-  // Cookie auth → GraphQL HomeTimeline
-  if (hasCookieAuth(creds)) {
-    const resp = await xGqlGet<Record<string, unknown>>(
-      'HomeTimeline',
-      {
-        count: Math.min(limit, 20),
-        includePromotedContent: false,
-        latestControlAvailable: true,
-        requestContext: 'launch',
-        withCommunity: false,
-        seenTweetCount: 0,
-      },
-      creds
-    );
-    const instructions = (
-      (((resp['data'] as Record<string, unknown>)
-        ?.['home'] as Record<string, unknown>)
-        ?.['home_timeline_urt'] as Record<string, unknown>)
-        ?.['instructions'] as unknown[] ?? []);
-    return parseTimelineInstructions(instructions).slice(0, limit);
+  // Cookie auth → twitter-cli bridge
+  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+    return bridgeFeed(limit, creds);
   }
 
   // OAuth access token → v2 REST home timeline
