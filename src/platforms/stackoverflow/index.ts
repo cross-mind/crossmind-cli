@@ -24,8 +24,8 @@ export function registerStackOverflow(program: Command): void {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
       try {
-        const items = await executePipeline(PLATFORM, 'top', { limit, tag: opts.tag ?? '' });
-        printOutput(items, undefined, 'so/top', start, { json: opts.json });
+        const { items, template } = await executePipeline(PLATFORM, 'top', { limit, tag: opts.tag ?? '' });
+        printOutput(items, template, 'so/top', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
@@ -41,8 +41,8 @@ export function registerStackOverflow(program: Command): void {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
       try {
-        const items = await executePipeline(PLATFORM, 'search', { query, limit, tag: opts.tag ?? '' });
-        printOutput(items, undefined, 'so/search', start, { json: opts.json });
+        const { items, template } = await executePipeline(PLATFORM, 'search', { query, limit, tag: opts.tag ?? '' });
+        printOutput(items, template, 'so/search', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
@@ -57,8 +57,8 @@ export function registerStackOverflow(program: Command): void {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
       try {
-        const items = await executePipeline(PLATFORM, 'trending', { limit });
-        printOutput(items, undefined, 'so/trending', start, { json: opts.json });
+        const { items, template } = await executePipeline(PLATFORM, 'trending', { limit });
+        printOutput(items, template, 'so/trending', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);

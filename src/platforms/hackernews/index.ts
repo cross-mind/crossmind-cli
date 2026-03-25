@@ -25,8 +25,8 @@ function hnCommand(
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
 
       try {
-        const items = await executePipeline(PLATFORM, name, { limit });
-        printOutput(items, undefined, `hn/${name}`, start, { json: opts.json });
+        const { items, template } = await executePipeline(PLATFORM, name, { limit });
+        printOutput(items, template, `hn/${name}`, start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);

@@ -23,8 +23,8 @@ export function registerDevTo(program: Command): void {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
       try {
-        const items = await executePipeline(PLATFORM, 'top', { limit });
-        printOutput(items, undefined, 'dev/top', start, { json: opts.json });
+        const { items, template } = await executePipeline(PLATFORM, 'top', { limit });
+        printOutput(items, template, 'dev/top', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
@@ -39,8 +39,8 @@ export function registerDevTo(program: Command): void {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
       try {
-        const items = await executePipeline(PLATFORM, 'latest', { limit });
-        printOutput(items, undefined, 'dev/latest', start, { json: opts.json });
+        const { items, template } = await executePipeline(PLATFORM, 'latest', { limit });
+        printOutput(items, template, 'dev/latest', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
@@ -55,8 +55,8 @@ export function registerDevTo(program: Command): void {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
       try {
-        const items = await executePipeline(PLATFORM, 'search', { query, limit });
-        printOutput(items, undefined, 'dev/search', start, { json: opts.json });
+        const { items, template } = await executePipeline(PLATFORM, 'search', { query, limit });
+        printOutput(items, template, 'dev/search', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);

@@ -47,7 +47,9 @@ export async function searchRepos(
   dataDir?: string
 ): Promise<GHRepo[]> {
   const token = await getGitHubToken(account, dataDir);
-  const url = `${GITHUB_API}/search/repositories?q=${encodeURIComponent(query)}&sort=${sort}&per_page=${Math.min(limit, 100)}`;
+  // GitHub search requires colons in qualifiers (e.g. language:python) to remain unencoded.
+  const q = encodeURIComponent(query).replace(/%3A/gi, ':');
+  const url = `${GITHUB_API}/search/repositories?q=${q}&sort=${sort}&per_page=${Math.min(limit, 100)}`;
   const data = await request<{ items: Record<string, unknown>[] }>(url, {
     headers: githubHeaders(token),
   });
@@ -75,7 +77,7 @@ export async function trendingRepos(
 ): Promise<GHRepo[]> {
   const days = period === 'daily' ? 1 : period === 'weekly' ? 7 : 30;
   const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
-  const langFilter = language ? `+language:${encodeURIComponent(language)}` : '';
+  const langFilter = language ? ` language:${language}` : '';
   const query = `created:>${since}${langFilter}`;
   return searchRepos(query, 'stars', limit, account, dataDir);
 }

@@ -122,14 +122,19 @@ export interface PipelineVars {
   [key: string]: unknown;
 }
 
+export interface PipelineResult {
+  items: Array<Record<string, unknown>>;
+  template: string | undefined;
+}
+
 /**
- * Execute a YAML pipeline adapter and return mapped items.
+ * Execute a YAML pipeline adapter and return mapped items plus the YAML template.
  */
 export async function executePipeline(
   platform: string,
   command: string,
   vars: PipelineVars = {}
-): Promise<Array<Record<string, unknown>>> {
+): Promise<PipelineResult> {
   const config = await loadAdapter(platform, command);
   const limit = vars.limit ?? 20;
   const allVars = { limit, ...vars };
@@ -137,24 +142,31 @@ export async function executePipeline(
   const url = interpolate(config.url, allVars);
 
   if (config.paginate?.type === 'ids') {
-    // Fetch ID list, then each item individually
+    // Fetch ID list, then each item individually.
+    // Fetch extra IDs to account for items that may be filtered out.
     const ids = await request<number[]>(url);
-    const sliced = ids.slice(0, limit);
+    const fetchCount = config.filter ? Math.min(ids.length, limit * 3) : limit;
+    const sliced = ids.slice(0, fetchCount);
     const itemUrlTemplate = config.paginate.itemUrl ?? '';
-    const items = await Promise.all(
-      sliced.map((id, i) =>
+    const rawItems = await Promise.all(
+      sliced.map((id) =>
         request<Record<string, unknown>>(interpolate(itemUrlTemplate, { ...allVars, id }))
-          .then((item) => mapItem(item, config.map, i))
           .catch(() => null)
       )
     );
-    let result = items.filter((x): x is Record<string, unknown> => x !== null);
+
+    // Apply filter on raw API items (before mapping)
+    let filtered = rawItems.filter((x): x is Record<string, unknown> => x !== null);
     if (config.filter) {
       for (const [key, val] of Object.entries(config.filter)) {
-        result = result.filter((item) => String(item[key]) === String(val));
+        filtered = filtered.filter((item) => String(item[key]) === String(val));
       }
     }
-    return result;
+
+    return {
+      items: filtered.slice(0, limit).map((item, i) => mapItem(item, config.map, i)),
+      template: config.template,
+    };
   }
 
   // Simple fetch
@@ -190,7 +202,7 @@ export async function executePipeline(
     });
   }
 
-  return items.slice(0, limit);
+  return { items: items.slice(0, limit), template: config.template };
 }
 
 export { loadAdapter };

@@ -43,7 +43,7 @@ export function registerGitHub(program: Command): void {
     .command('trending [limit]')
     .description('Trending repositories')
     .option('--lang <language>', 'Filter by programming language')
-    .option('--period <period>', 'Period: daily, weekly, monthly (default: daily)', 'daily')
+    .option('--period <period>', 'Period: daily, weekly, monthly (default: weekly)', 'weekly')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('--json', 'Output as JSON array')
