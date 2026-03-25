@@ -77,13 +77,26 @@ export async function saveCookieAuth(
 }
 
 /**
+ * Save an X developer bearer token for app-only read access.
+ * Allows `x search / x timeline` without a full OAuth login.
+ */
+export async function saveBearerToken(
+  accountName: string,
+  token: string,
+  dataDir?: string
+): Promise<void> {
+  await saveCredential({ platform: 'x', name: accountName, bearerToken: token }, dataDir);
+  console.log(`X bearer token saved as "${accountName}". Read-only API access enabled.`);
+}
+
+/**
  * Load X credentials for an account.
  * Returns null if not found.
  */
 export async function loadXCredentials(
   account?: string,
   dataDir?: string
-): Promise<{ authToken?: string; ct0?: string; accessToken?: string } | null> {
+): Promise<{ authToken?: string; ct0?: string; accessToken?: string; bearerToken?: string } | null> {
   const name = await resolveAccount('x', account, dataDir);
   const cred = await loadCredential('x', name, dataDir);
   if (!cred) return null;
@@ -91,5 +104,6 @@ export async function loadXCredentials(
     authToken: cred.authToken,
     ct0: cred.ct0,
     accessToken: cred.accessToken,
+    bearerToken: cred.bearerToken,
   };
 }

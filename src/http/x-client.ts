@@ -13,13 +13,19 @@ const X_BEARER = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I4xNp1Y
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 export interface XCredentials {
-  authToken: string;  // auth_token cookie
-  ct0: string;        // ct0 CSRF token cookie
+  authToken?: string;   // auth_token cookie (full user-context auth)
+  ct0?: string;         // ct0 CSRF token cookie
+  bearerToken?: string; // Developer app-only bearer token (read-only, no login required)
 }
 
 function buildXHeaders(creds?: XCredentials): Record<string, string> {
+  // Prefer developer bearer token; fall back to the hardcoded guest token.
+  const authorization = creds?.bearerToken
+    ? `Bearer ${creds.bearerToken}`
+    : X_BEARER;
+
   const headers: Record<string, string> = {
-    'Authorization': X_BEARER,
+    'Authorization': authorization,
     'User-Agent': UA,
     'Accept-Language': 'en-US,en;q=0.9',
     'Referer': 'https://twitter.com/',
@@ -27,7 +33,7 @@ function buildXHeaders(creds?: XCredentials): Record<string, string> {
     'x-twitter-client-language': 'en',
   };
 
-  if (creds) {
+  if (creds?.authToken && creds?.ct0) {
     headers['Cookie'] = `auth_token=${creds.authToken}; ct0=${creds.ct0}`;
     headers['X-CSRF-Token'] = creds.ct0;
     headers['x-twitter-auth-type'] = 'OAuth2Session';

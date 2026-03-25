@@ -15,6 +15,7 @@ export interface Credential {
   cookie?: string;
   authToken?: string;    // X auth_token cookie value
   ct0?: string;          // X ct0 CSRF token
+  bearerToken?: string;  // X developer app-only bearer token (read-only)
   accessToken?: string;
   refreshToken?: string;
   expiresAt?: number;    // Unix timestamp ms

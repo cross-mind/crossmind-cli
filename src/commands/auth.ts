@@ -4,7 +4,7 @@
  */
 
 import { Command } from 'commander';
-import { loginX, saveCookieAuth } from '../auth/x.js';
+import { loginX, saveCookieAuth, saveBearerToken } from '../auth/x.js';
 import { loginReddit } from '../auth/reddit.js';
 import { loginBluesky } from '../auth/bluesky.js';
 import { saveGitHubToken } from '../auth/github.js';
@@ -41,6 +41,7 @@ export function registerAuthCommands(program: Command): void {
     .option('--cookie <cookie>', 'Provide raw cookie string directly')
     .option('--auth-token <authToken>', 'X auth_token cookie value')
     .option('--ct0 <ct0>', 'X ct0 CSRF token')
+    .option('--bearer-token <bearerToken>', 'X developer bearer token (read-only, no login required)')
     .option('--handle <handle>', 'Bluesky handle (e.g. user.bsky.social)')
     .option('--app-password <password>', 'Bluesky app password')
     .action(async (
@@ -52,6 +53,7 @@ export function registerAuthCommands(program: Command): void {
         cookie?: string;
         authToken?: string;
         ct0?: string;
+        bearerToken?: string;
         handle?: string;
         appPassword?: string;
       }
@@ -62,7 +64,10 @@ export function registerAuthCommands(program: Command): void {
         switch (platform) {
           case 'x':
           case 'twitter': {
-            if (opts.authToken && opts.ct0) {
+            if (opts.bearerToken) {
+              // App-only bearer token — read-only, no account login needed
+              await saveBearerToken(accountName, opts.bearerToken, opts.dataDir);
+            } else if (opts.authToken && opts.ct0) {
               // Direct cookie auth
               await saveCookieAuth(accountName, opts.authToken, opts.ct0, opts.dataDir);
               console.log(`X cookies saved as "${accountName}".`);

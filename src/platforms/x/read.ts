@@ -73,7 +73,7 @@ export async function searchTweets(
     data?: Record<string, unknown>[];
     includes?: { users?: Record<string, unknown>[] };
   }>(`/2/tweets/search/recent?${params}`, {
-    creds: creds ? { authToken: creds.authToken!, ct0: creds.ct0! } : undefined,
+    creds: creds ?? undefined,
   });
 
   const tweets = data.data ?? [];
