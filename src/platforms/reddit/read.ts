@@ -1,10 +1,17 @@
 /**
  * Reddit read operations.
- * Subreddit listings, search, user profile, saved posts.
+ *
+ * Auth priority:
+ *   1. Cookie (reddit_session) → www.reddit.com JSON API with session cookie
+ *   2. OAuth access token      → oauth.reddit.com with Bearer token
+ *   3. No credentials          → www.reddit.com public JSON API
  */
 
 import { request } from '../../http/client.js';
-import { getRedditToken, REDDIT_API, redditHeaders } from '../../auth/reddit.js';
+import {
+  loadRedditCredentials, REDDIT_API,
+  redditHeaders, redditCookieHeaders, redditPublicHeaders,
+} from '../../auth/reddit.js';
 
 export interface RedditPost {
   rank: number;
@@ -47,7 +54,31 @@ function mapPost(child: Record<string, unknown>, index: number): RedditPost {
   };
 }
 
-/** Fetch subreddit listing (hot/new/top/rising) */
+/** Resolve base URL and headers based on available credentials. */
+async function resolveAuth(account?: string, dataDir?: string): Promise<{
+  baseUrl: string;
+  headers: Record<string, string>;
+}> {
+  const creds = await loadRedditCredentials(account, dataDir);
+  if (creds?.type === 'cookie') {
+    return {
+      baseUrl: 'https://www.reddit.com',
+      headers: redditCookieHeaders(creds.session, creds.modhash),
+    };
+  }
+  if (creds?.type === 'oauth') {
+    return {
+      baseUrl: REDDIT_API,
+      headers: redditHeaders(creds.token),
+    };
+  }
+  return {
+    baseUrl: 'https://www.reddit.com',
+    headers: redditPublicHeaders(),
+  };
+}
+
+/** Fetch subreddit listing (hot/new/top/rising). */
 export async function getSubreddit(
   subreddit: string,
   sort: 'hot' | 'new' | 'top' | 'rising',
@@ -56,30 +87,14 @@ export async function getSubreddit(
   account?: string,
   dataDir?: string
 ): Promise<RedditPost[]> {
-  let token: string | undefined;
-  let baseUrl: string;
-
-  try {
-    token = await getRedditToken(account, dataDir);
-    baseUrl = REDDIT_API;
-  } catch {
-    // Fall back to public API
-    baseUrl = 'https://www.reddit.com';
-  }
-
+  const { baseUrl, headers } = await resolveAuth(account, dataDir);
   const timeParam = sort === 'top' ? `&t=${time}` : '';
   const url = `${baseUrl}/r/${subreddit}/${sort}.json?limit=${Math.min(limit, 100)}${timeParam}`;
-
-  const data = await request<{ data: { children: Record<string, unknown>[] } }>(
-    url,
-    { headers: token ? redditHeaders(token) : { 'User-Agent': 'crossmind-cli/1.0' } }
-  );
-
-  const posts = data.data.children ?? [];
-  return posts.slice(0, limit).map((child, i) => mapPost(child, i));
+  const data = await request<{ data: { children: Record<string, unknown>[] } }>(url, { headers });
+  return (data.data.children ?? []).slice(0, limit).map((child, i) => mapPost(child, i));
 }
 
-/** Search Reddit */
+/** Search Reddit. */
 export async function searchReddit(
   query: string,
   subreddit: string | undefined,
@@ -88,28 +103,14 @@ export async function searchReddit(
   account?: string,
   dataDir?: string
 ): Promise<RedditPost[]> {
-  let token: string | undefined;
-  let baseUrl: string;
-
-  try {
-    token = await getRedditToken(account, dataDir);
-    baseUrl = REDDIT_API;
-  } catch {
-    baseUrl = 'https://www.reddit.com';
-  }
-
+  const { baseUrl, headers } = await resolveAuth(account, dataDir);
   const subredditPath = subreddit ? `/r/${subreddit}` : '';
   const url = `${baseUrl}${subredditPath}/search.json?q=${encodeURIComponent(query)}&sort=${sort}&limit=${Math.min(limit, 100)}&restrict_sr=${subreddit ? 'true' : 'false'}`;
-
-  const data = await request<{ data: { children: Record<string, unknown>[] } }>(
-    url,
-    { headers: token ? redditHeaders(token) : { 'User-Agent': 'crossmind-cli/1.0' } }
-  );
-
+  const data = await request<{ data: { children: Record<string, unknown>[] } }>(url, { headers });
   return (data.data.children ?? []).slice(0, limit).map((child, i) => mapPost(child, i));
 }
 
-/** Get post comments */
+/** Get post comments. */
 export async function getPostComments(
   subreddit: string,
   postId: string,
@@ -117,21 +118,9 @@ export async function getPostComments(
   account?: string,
   dataDir?: string
 ): Promise<RedditComment[]> {
-  let token: string | undefined;
-  let baseUrl: string;
-
-  try {
-    token = await getRedditToken(account, dataDir);
-    baseUrl = REDDIT_API;
-  } catch {
-    baseUrl = 'https://www.reddit.com';
-  }
-
+  const { baseUrl, headers } = await resolveAuth(account, dataDir);
   const url = `${baseUrl}/r/${subreddit}/comments/${postId}.json?limit=${Math.min(limit, 100)}`;
-  const data = await request<[unknown, { data: { children: Record<string, unknown>[] } }]>(
-    url,
-    { headers: token ? redditHeaders(token) : { 'User-Agent': 'crossmind-cli/1.0' } }
-  );
+  const data = await request<[unknown, { data: { children: Record<string, unknown>[] } }]>(url, { headers });
 
   const children = data[1]?.data?.children ?? [];
   const results: RedditComment[] = [];

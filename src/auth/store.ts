@@ -13,16 +13,18 @@ export interface Credential {
   platform: string;
   name: string;
   cookie?: string;
-  authToken?: string;    // X auth_token cookie value
-  ct0?: string;          // X ct0 CSRF token
-  bearerToken?: string;  // X developer app-only bearer token (read-only)
+  authToken?: string;      // X auth_token cookie value
+  ct0?: string;            // X ct0 CSRF token
+  bearerToken?: string;    // X developer app-only bearer token (read-only)
   accessToken?: string;
   refreshToken?: string;
-  expiresAt?: number;    // Unix timestamp ms
-  appPassword?: string;  // Bluesky app password
-  apiToken?: string;     // GitHub or generic token
-  did?: string;          // Bluesky DID
-  handle?: string;       // handle / username
+  expiresAt?: number;      // Unix timestamp ms
+  appPassword?: string;    // Bluesky app password
+  apiToken?: string;       // GitHub or generic token
+  did?: string;            // Bluesky DID
+  handle?: string;         // handle / username
+  redditSession?: string;  // reddit_session cookie (cookie-based auth)
+  redditModhash?: string;  // modhash for Reddit write ops (optional)
 }
 
 interface Config {

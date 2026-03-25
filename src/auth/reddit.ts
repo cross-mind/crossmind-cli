@@ -1,7 +1,10 @@
 /**
  * Reddit authentication.
- * Uses OAuth 2.0 PKCE (public client, no secret).
- * Access token is short-lived; refresh token is permanent.
+ *
+ * Auth priority:
+ *   1. Cookie (reddit_session)  → www.reddit.com JSON API with session cookie
+ *   2. OAuth 2.0 access token   → oauth.reddit.com with Bearer token
+ *   3. No credentials           → www.reddit.com public JSON API
  */
 
 import open from 'open';
@@ -24,6 +27,12 @@ const REDDIT_OAUTH_CONFIG: OAuthConfig = {
   tokenUrl: 'https://www.reddit.com/api/v1/access_token',
   scopes: ['read', 'submit', 'vote', 'save', 'subscribe', 'history', 'identity', 'mysubreddits'],
 };
+
+/** Unified credential type — tells callers which auth strategy is available. */
+export type RedditCredentials =
+  | { type: 'oauth'; token: string }
+  | { type: 'cookie'; session: string; modhash?: string }
+  | null;
 
 /**
  * Run the Reddit OAuth 2.0 PKCE flow.
@@ -58,7 +67,63 @@ export async function loginReddit(accountName: string, dataDir?: string): Promis
 }
 
 /**
+ * Save Reddit session cookie credentials (extracted from browser).
+ */
+export async function saveRedditCookies(
+  accountName: string,
+  session: string,
+  modhash?: string,
+  dataDir?: string
+): Promise<void> {
+  await saveCredential({
+    platform: 'reddit',
+    name: accountName,
+    redditSession: session,
+    redditModhash: modhash,
+  }, dataDir);
+  console.log(`Reddit session cookie saved as "${accountName}".`);
+}
+
+/**
+ * Load Reddit credentials, returning the highest-priority auth method available.
+ * Priority: cookie (reddit_session) > OAuth access token > null (no-auth)
+ */
+export async function loadRedditCredentials(
+  account?: string,
+  dataDir?: string
+): Promise<RedditCredentials> {
+  const name = await resolveAccount('reddit', account, dataDir);
+  const cred = await loadCredential('reddit', name, dataDir);
+  if (!cred) return null;
+
+  // Cookie auth wins if present
+  if (cred.redditSession) {
+    return { type: 'cookie', session: cred.redditSession, modhash: cred.redditModhash };
+  }
+
+  // OAuth access token
+  if (cred.accessToken) {
+    // Refresh if expired (with 60s buffer)
+    if (cred.expiresAt && Date.now() > cred.expiresAt - 60_000 && cred.refreshToken) {
+      const tokens = await refreshToken(REDDIT_OAUTH_CONFIG, cred.refreshToken);
+      const updated = {
+        ...cred,
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token ?? cred.refreshToken,
+        expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : cred.expiresAt,
+      };
+      await saveCredential(updated, dataDir);
+      return { type: 'oauth', token: updated.accessToken! };
+    }
+    return { type: 'oauth', token: cred.accessToken };
+  }
+
+  return null;
+}
+
+/**
  * Get a valid Reddit access token, refreshing if expired.
+ * @deprecated Prefer loadRedditCredentials() for the full auth chain.
  */
 export async function getRedditToken(account?: string, dataDir?: string): Promise<string> {
   const name = await resolveAccount('reddit', account, dataDir);
@@ -83,13 +148,34 @@ export async function getRedditToken(account?: string, dataDir?: string): Promis
   return cred.accessToken;
 }
 
-/** Reddit API base URL */
+/** Reddit OAuth API base URL */
 export const REDDIT_API = 'https://oauth.reddit.com';
 
-/** Build headers for Reddit API calls */
+/** Build headers for Reddit OAuth API calls */
 export function redditHeaders(token: string): Record<string, string> {
   return {
     'Authorization': `Bearer ${token}`,
     'User-Agent': REDDIT_UA,
   };
+}
+
+/** Build headers for Reddit cookie-based API calls */
+export function redditCookieHeaders(session: string, modhash?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Cookie': `reddit_session=${encodeURIComponent(session)}`,
+    'User-Agent': REDDIT_UA,
+    'Accept': 'application/json',
+    'sec-ch-ua': '"Chromium";v="133", "Not(A:Brand";v="99", "Google Chrome";v="133"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"',
+  };
+  if (modhash) {
+    headers['x-modhash'] = modhash;
+  }
+  return headers;
+}
+
+/** Build headers for anonymous Reddit API calls */
+export function redditPublicHeaders(): Record<string, string> {
+  return { 'User-Agent': REDDIT_UA };
 }

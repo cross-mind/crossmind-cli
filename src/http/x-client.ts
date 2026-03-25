@@ -1,30 +1,72 @@
 /**
  * X (Twitter) HTTP client.
- * Uses cookie-based auth (auth_token + ct0) for API calls.
- * Adds the required X-CSRF-Token header and mimics browser User-Agent.
+ *
+ * Auth priority (highest to lowest):
+ *   1. Cookie (auth_token + ct0)  → x.com/i/api/graphql/* (GraphQL API)
+ *   2. Stored bearer token        → api.twitter.com/2/*   (v2 REST, read-only)
+ *   3. No-auth / public           → api.twitter.com/2/*   (v2 REST, public bearer)
+ *   4. OAuth access token         → api.twitter.com/2/*   (v2 REST, user context)
  */
 
 import { request, AuthError, type RequestOptions } from './client.js';
 
 const X_API_BASE = 'https://api.twitter.com';
-const X_BEARER = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I4xNp1YjHJj%2BI9m5FkS4bCZ3m0E';
 
-/** Browser-like User-Agent to avoid bot detection */
-const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+// Twitter internal app bearer — used for public v2 REST calls
+const X_BEARER_REST = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I4xNp1YjHJj%2BI9m5FkS4bCZ3m0E';
+
+// Twitter/X internal GraphQL bearer — required when calling x.com/i/api/graphql
+const X_BEARER_GQL = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+
+const X_GQL_BASE = 'https://x.com/i/api/graphql';
+
+// Fallback queryIds — periodically updated by Twitter; these match twitter-cli's defaults
+export const X_GQL_IDS = {
+  SearchTimeline:  'MJpyQGqgklrVl_0X9gNy3A',
+  HomeTimeline:    'HCosKfLNW1AcOo3la3mMgg',
+  UserByScreenName:'qRednkZG-rn1P6b48NINmQ',
+  UserTweets:      'E3opETHurmVJflFsUBVuUQ',
+};
+
+// Minimal feature flags required for most GraphQL read operations
+const GQL_FEATURES: Record<string, boolean> = {
+  responsive_web_graphql_exclude_directive_enabled: true,
+  verified_phone_label_enabled: false,
+  creator_subscriptions_tweet_preview_api_enabled: true,
+  responsive_web_graphql_timeline_navigation_enabled: true,
+  responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+  responsive_web_edit_tweet_api_enabled: true,
+  graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
+  view_counts_everywhere_api_enabled: true,
+  longform_notetweets_consumption_enabled: true,
+  tweet_awards_web_tipping_enabled: false,
+  freedom_of_speech_not_reach_fetch_enabled: true,
+  standardized_nudges_misinfo: true,
+  responsive_web_enhance_cards_enabled: false,
+};
+
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
 
 export interface XCredentials {
-  authToken?: string;   // auth_token cookie (full user-context auth)
-  ct0?: string;         // ct0 CSRF token cookie
-  bearerToken?: string; // Developer app-only bearer token (read-only, no login required)
+  authToken?: string;   // auth_token cookie (cookie-based auth → GraphQL)
+  ct0?: string;         // ct0 CSRF token   (required with authToken)
+  bearerToken?: string; // Developer app-only bearer token (v2 REST, read-only)
+  accessToken?: string; // OAuth 2.0 user access token (v2 REST, user context)
 }
 
-function buildXHeaders(creds?: XCredentials): Record<string, string> {
-  // Prefer developer bearer token; fall back to the hardcoded guest token.
-  const authorization = creds?.bearerToken
-    ? `Bearer ${creds.bearerToken}`
-    : X_BEARER;
+/** Build headers for v2 REST API calls (api.twitter.com). */
+function buildRestHeaders(creds?: XCredentials): Record<string, string> {
+  // Auth priority: stored developer bearer > OAuth access token > public bearer
+  let authorization: string;
+  if (creds?.bearerToken) {
+    authorization = `Bearer ${creds.bearerToken}`;
+  } else if (creds?.accessToken) {
+    authorization = `Bearer ${creds.accessToken}`;
+  } else {
+    authorization = X_BEARER_REST;
+  }
 
-  const headers: Record<string, string> = {
+  return {
     'Authorization': authorization,
     'User-Agent': UA,
     'Accept-Language': 'en-US,en;q=0.9',
@@ -32,20 +74,35 @@ function buildXHeaders(creds?: XCredentials): Record<string, string> {
     'x-twitter-active-user': 'yes',
     'x-twitter-client-language': 'en',
   };
+}
 
-  if (creds?.authToken && creds?.ct0) {
-    headers['Cookie'] = `auth_token=${creds.authToken}; ct0=${creds.ct0}`;
-    headers['X-CSRF-Token'] = creds.ct0;
-    headers['x-twitter-auth-type'] = 'OAuth2Session';
-  }
-
-  return headers;
+/** Build headers for GraphQL API calls (x.com/i/api/graphql). Requires cookie auth. */
+function buildGqlHeaders(creds: XCredentials): Record<string, string> {
+  return {
+    'Authorization': X_BEARER_GQL,
+    'Cookie': `auth_token=${creds.authToken}; ct0=${creds.ct0}`,
+    'X-Csrf-Token': creds.ct0!,
+    'x-twitter-active-user': 'yes',
+    'x-twitter-auth-type': 'OAuth2Session',
+    'x-twitter-client-language': 'en',
+    'User-Agent': UA,
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Origin': 'https://x.com',
+    'Referer': 'https://x.com/',
+    'sec-ch-ua': '"Chromium";v="133", "Not(A:Brand";v="99", "Google Chrome";v="133"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
+  };
 }
 
 /**
- * Make an X API call.
- * - With creds: cookie-auth session (can access private data, write ops)
- * - Without creds: bearer-only (public read-only)
+ * Make an X v2 REST API call.
+ * - With creds.authToken+ct0: not used here (use xGqlGet instead)
+ * - With creds.bearerToken or creds.accessToken: token auth
+ * - Without creds: public bearer
  */
 export async function xRequest<T = unknown>(
   path: string,
@@ -53,12 +110,35 @@ export async function xRequest<T = unknown>(
 ): Promise<T> {
   const { creds, ...rest } = opts;
   const url = path.startsWith('http') ? path : `${X_API_BASE}${path}`;
-  const headers = { ...buildXHeaders(creds), ...(rest.headers ?? {}) };
+  const headers = { ...buildRestHeaders(creds), ...(rest.headers ?? {}) };
   return request<T>(url, { ...rest, headers });
 }
 
 /**
- * Build X GraphQL API URL.
+ * Make an X GraphQL GET call (cookie auth required).
+ * Uses x.com/i/api/graphql/{queryId}/{operation}.
+ */
+export async function xGqlGet<T = unknown>(
+  operation: keyof typeof X_GQL_IDS,
+  variables: Record<string, unknown>,
+  creds: XCredentials,
+  featureOverrides?: Record<string, boolean>
+): Promise<T> {
+  const queryId = X_GQL_IDS[operation];
+  const features = featureOverrides ? { ...GQL_FEATURES, ...featureOverrides } : GQL_FEATURES;
+  // Only include true-valued features to keep URL short
+  const compact = Object.fromEntries(Object.entries(features).filter(([, v]) => v !== false));
+  const params = new URLSearchParams({
+    variables: JSON.stringify(variables),
+    features: JSON.stringify(compact),
+  });
+  const url = `${X_GQL_BASE}/${queryId}/${operation}?${params}`;
+  const headers = buildGqlHeaders(creds);
+  return request<T>(url, { headers });
+}
+
+/**
+ * Build X GraphQL API URL (legacy helper for external use).
  */
 export function xGraphQL(queryId: string, operationName: string): string {
   return `${X_API_BASE}/graphql/${queryId}/${operationName}`;

@@ -5,7 +5,7 @@
 
 import { Command } from 'commander';
 import { loginX, saveCookieAuth, saveBearerToken } from '../auth/x.js';
-import { loginReddit } from '../auth/reddit.js';
+import { loginReddit, saveRedditCookies } from '../auth/reddit.js';
 import { loginBluesky } from '../auth/bluesky.js';
 import { saveGitHubToken } from '../auth/github.js';
 import { saveCredential, listAccounts, removeCredential, getDefaultAccount } from '../auth/store.js';
@@ -44,6 +44,8 @@ export function registerAuthCommands(program: Command): void {
     .option('--bearer-token <bearerToken>', 'X developer bearer token (read-only, no login required)')
     .option('--handle <handle>', 'Bluesky handle (e.g. user.bsky.social)')
     .option('--app-password <password>', 'Bluesky app password')
+    .option('--session-cookie <session>', 'Reddit reddit_session cookie value')
+    .option('--modhash <modhash>', 'Reddit modhash for write operations (optional)')
     .action(async (
       platform: string,
       account: string | undefined,
@@ -56,6 +58,8 @@ export function registerAuthCommands(program: Command): void {
         bearerToken?: string;
         handle?: string;
         appPassword?: string;
+        sessionCookie?: string;
+        modhash?: string;
       }
     ) => {
       const accountName = account ?? 'default';
@@ -79,7 +83,13 @@ export function registerAuthCommands(program: Command): void {
           }
 
           case 'reddit': {
-            await loginReddit(accountName, opts.dataDir);
+            if (opts.sessionCookie) {
+              // Direct cookie auth (extracted from browser)
+              await saveRedditCookies(accountName, opts.sessionCookie, opts.modhash, opts.dataDir);
+            } else {
+              // OAuth 2.0 PKCE flow
+              await loginReddit(accountName, opts.dataDir);
+            }
             break;
           }
 
