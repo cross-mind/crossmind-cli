@@ -52,7 +52,7 @@ async function loadXCreds(): Promise<XCred | null> {
 
 const creds = await loadXCreds();
 const hasCookie = !!(creds?.authToken && creds?.ct0);
-const hasOAuth  = !!(creds?.bearerToken && creds?.accessToken);
+const hasOAuth  = !!(creds?.accessToken);   // user OAuth token (X_ACCESS_TOKEN / PKCE)
 
 // ── Run helper ────────────────────────────────────────────────────────────
 
@@ -246,29 +246,40 @@ describe('x/bookmark + unbookmark (cookie write)', () => {
 // ── x OAuth-required (skipped when no OAuth creds) ───────────────────────
 
 describe('x/likes (OAuth v2)', () => {
-  test('returns liked tweets for public user', async (t) => {
-    if (skipIf(!hasOAuth, 'needs bearerToken + accessToken')(t)) return;
-    const { stdout, stderr, code } = await run(['x', 'likes', FX.publicHandle, '5']);
+  test('returns liked tweets via OAuth accessToken', async (t) => {
+    if (skipIf(!hasOAuth, 'no OAuth accessToken in credentials')(t)) return;
+    const { stdout, stderr, code } = await run(['x', 'likes', FX.publicHandle, '5', '--json']);
     if (skipOnRateLimit(code, stderr, t)) return;
-    assert.equal(code, 0);
-    const rows = stdout.trim().split('\n').filter(l => /^\d+\./.test(l));
-    assert.ok(rows.length >= 1);
+    assert.equal(code, 0, `stderr: ${stderr.slice(0, 200)}`);
+    const items = JSON.parse(stdout) as Record<string, unknown>[];
+    assert.ok(Array.isArray(items) && items.length >= 1, 'expected ≥1 liked tweet');
+    assert.equal(typeof items[0]['id'], 'string');
+    assert.equal(typeof items[0]['text'], 'string');
   });
 });
 
 describe('x/dm-list (OAuth dm.read)', () => {
-  test('returns DM events list', async (t) => {
+  test('returns DM events with sender→recipient format', async (t) => {
     if (skipIf(!hasOAuth, 'needs OAuth with dm.read scope')(t)) return;
-    const { code } = await run(['x', 'dm-list', '10']);
-    assert.equal(code, 0);
+    const { stdout, stderr, code } = await run(['x', 'dm-list', '5']);
+    if (skipOnRateLimit(code, stderr, t)) return;
+    assert.equal(code, 0, `stderr: ${stderr.slice(0, 200)}`);
+    const rows = stdout.trim().split('\n').filter(l => /^\d+\./.test(l));
+    assert.ok(rows.length >= 1, 'expected ≥1 DM event');
+    // Format: "1. @sender→@recipient [date] — text"
+    assert.match(rows[0], /→/);
   });
 });
 
 describe('x/dm-conversation (OAuth dm.read)', () => {
-  test('returns DM conversation', async (t) => {
+  test('returns DM conversation messages', async (t) => {
     if (skipIf(!hasOAuth, 'needs OAuth with dm.read scope')(t)) return;
-    const { code } = await run(['x', 'dm-conversation', FX.publicHandle, '5']);
-    assert.equal(code, 0);
+    // TimothySolinger has a known DM conversation with CestIvan
+    const { stdout, stderr, code } = await run(['x', 'dm-conversation', 'TimothySolinger', '5']);
+    if (skipOnRateLimit(code, stderr, t)) return;
+    assert.equal(code, 0, `stderr: ${stderr.slice(0, 200)}`);
+    const rows = stdout.trim().split('\n').filter(l => /^\d+\./.test(l));
+    assert.ok(rows.length >= 1, 'expected ≥1 DM message');
   });
 });
 
