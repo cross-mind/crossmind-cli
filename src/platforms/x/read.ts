@@ -2,19 +2,19 @@
  * X (Twitter) read operations.
  *
  * Auth priority:
- *   1. Cookie (auth_token + ct0) → twitter-cli bridge (curl_cffi Chrome TLS)
+ *   1. Cookie (auth_token + ct0) → x-fetch.py bridge (curl_cffi Chrome TLS)
  *   2. Bearer / OAuth token      → v2 REST API (api.twitter.com/2)
  *   3. No credentials            → v2 REST with public bearer (search only)
  *
  * Note: x.com/i/api/graphql requires Chrome TLS fingerprinting. Node.js's
- * fetch() is rejected (404). The bridge delegates to twitter-cli which uses
- * curl_cffi for proper Chrome impersonation.
+ * fetch() is rejected (404). The bridge delegates to scripts/x-fetch.py which
+ * uses curl_cffi for proper Chrome impersonation.
  */
 
 import { xRequest, type XCredentials } from '../../http/x-client.js';
 import { loadXCredentials } from '../../auth/x.js';
 import {
-  isTwitterCliAvailable,
+  isCookieClientAvailable,
   bridgeSearchTweets,
   bridgeFeed,
   bridgeUserTimeline,
@@ -94,8 +94,8 @@ export async function searchTweets(
 ): Promise<XTweet[]> {
   const creds = await loadXCredentials(account, dataDir);
 
-  // Cookie auth → twitter-cli bridge (Chrome TLS via curl_cffi)
-  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+  // Cookie auth → x-fetch.py bridge (Chrome TLS via curl_cffi)
+  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
     return bridgeSearchTweets(query, limit, creds);
   }
 
@@ -135,8 +135,8 @@ export async function getUserTimeline(
 ): Promise<XTweet[]> {
   const creds = await loadXCredentials(account, dataDir);
 
-  // Cookie auth → twitter-cli bridge
-  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+  // Cookie auth → x-fetch.py bridge
+  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
     return bridgeUserTimeline(username, limit, creds);
   }
 
@@ -169,8 +169,8 @@ export async function getUserProfile(
 ): Promise<XUser | null> {
   const creds = await loadXCredentials(account, dataDir);
 
-  // Cookie auth → twitter-cli bridge
-  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+  // Cookie auth → x-fetch.py bridge
+  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
     return bridgeUserProfile(username, creds);
   }
 
@@ -206,8 +206,8 @@ export async function getHomeTimeline(
 ): Promise<XTweet[]> {
   const creds = await loadXCredentials(account, dataDir);
 
-  // Cookie auth → twitter-cli bridge
-  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+  // Cookie auth → x-fetch.py bridge
+  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
     return bridgeFeed(limit, creds);
   }
 
@@ -266,8 +266,8 @@ export async function getTweet(
 ): Promise<XTweetThread> {
   const creds = await loadXCredentials(account, dataDir);
 
-  // Cookie auth → twitter-cli bridge
-  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+  // Cookie auth → x-fetch.py bridge
+  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
     return bridgeTweet(tweetId, limit, creds);
   }
 
@@ -294,7 +294,7 @@ export async function getFollowers(
 ): Promise<XUser[]> {
   const creds = await loadXCredentials(account, dataDir);
 
-  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
     return bridgeFollowers(username, limit, creds);
   }
 
@@ -324,7 +324,7 @@ export async function getFollowing(
 ): Promise<XUser[]> {
   const creds = await loadXCredentials(account, dataDir);
 
-  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
     return bridgeFollowing(username, limit, creds);
   }
 
@@ -354,8 +354,12 @@ export async function getBookmarks(
   if (!hasCookieAuth(creds)) {
     throw new AuthError('Bookmarks require cookie auth. Run: crossmind auth login x --auth-token <token> --ct0 <ct0>');
   }
-  if (!await isTwitterCliAvailable()) {
-    throw new Error('Bookmarks require twitter-cli. Install: uvx install twitter-cli');
+  if (!await isCookieClientAvailable()) {
+    throw new Error(
+      'Bookmarks require Python 3 with curl_cffi.\n' +
+      '  Install: uv pip install curl_cffi\n' +
+      '  Or: pip install curl_cffi'
+    );
   }
   return bridgeBookmarks(limit, creds);
 }
@@ -369,7 +373,7 @@ export async function getListTweets(
 ): Promise<XTweet[]> {
   const creds = await loadXCredentials(account, dataDir);
 
-  if (hasCookieAuth(creds) && await isTwitterCliAvailable()) {
+  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
     return bridgeListTweets(listId, limit, creds);
   }
 

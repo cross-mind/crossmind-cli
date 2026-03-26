@@ -1,0 +1,537 @@
+#!/usr/bin/env python3
+"""
+X (Twitter) cookie-auth GraphQL client with Chrome TLS fingerprinting.
+
+Uses curl_cffi for JA3/JA4 Chrome impersonation — required because X's
+GraphQL endpoints reject Node.js/OpenSSL TLS fingerprints with 404.
+
+Env vars (required for authenticated operations):
+  X_AUTH_TOKEN  - auth_token cookie value
+  X_CT0         - ct0 cookie value (CSRF token)
+
+Usage:
+  x-fetch.py feed [--count N]
+  x-fetch.py search <query> [--count N]
+  x-fetch.py user-posts <username> [--count N]
+  x-fetch.py user <username>
+  x-fetch.py tweet <tweet_id>
+  x-fetch.py followers <username> [--count N]
+  x-fetch.py following <username> [--count N]
+  x-fetch.py bookmarks [--count N]
+  x-fetch.py list <list_id> [--count N]
+  x-fetch.py bookmark <tweet_id>
+  x-fetch.py unbookmark <tweet_id>
+
+Output: JSON {"ok": true|false, "data": ..., "error": {"message": "..."}}
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.parse
+from typing import Any, Dict, List, Optional
+
+# ── curl_cffi import ────────────────────────────────────────────────────────
+
+try:
+    from curl_cffi import requests as cffi_requests
+except ImportError:
+    _out(False, None, "curl_cffi not installed. Run: uv pip install curl_cffi")
+    sys.exit(1)
+
+
+def _out(ok: bool, data: Any, error_msg: Optional[str] = None) -> None:
+    obj: Dict[str, Any] = {"ok": ok}
+    if data is not None:
+        obj["data"] = data
+    if error_msg:
+        obj["error"] = {"message": error_msg}
+    print(json.dumps(obj, ensure_ascii=False))
+
+
+# ── Credentials ─────────────────────────────────────────────────────────────
+
+AUTH_TOKEN = os.environ.get("X_AUTH_TOKEN", "")
+CT0 = os.environ.get("X_CT0", "")
+
+BEARER = (
+    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
+    "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
+
+# ── Query IDs ────────────────────────────────────────────────────────────────
+# Fetched from X JS bundles; may rotate periodically.
+# Self-heals via twitter-openapi fallback (see _resolve_query_id).
+
+QUERY_IDS: Dict[str, str] = {
+    "HomeTimeline":             "HCosKfLNW1AcOo3la3mMgg",
+    "SearchTimeline":           "MJpyQGqgklrVl_0X9gNy3A",
+    "UserTweets":               "E3opETHurmVJflFsUBVuUQ",
+    "UserByScreenName":         "qRednkZG-rn1P6b48NINmQ",
+    "TweetDetail":              "nBS-WpgA6ZG0CyNHD517JQ",
+    "Followers":                "IOh4aS6UdGWGJUYTqliQ7Q",
+    "Following":                "zx6e-TLzRkeDO_a7p4b3JQ",
+    "Bookmarks":                "uzboyXSHSJrR-mGJqep0TQ",
+    "ListLatestTweetsTimeline": "ZBbXrl0FVnTqp7K6EAADog",
+    "CreateBookmark":           "aoDbu3RHznuiSkQ9aNM67Q",
+    "DeleteBookmark":           "Wlmlj2-xISYCixDmuS8KNg",
+}
+
+FEATURES: Dict[str, bool] = {
+    "responsive_web_graphql_exclude_directive_enabled": True,
+    "verified_phone_label_enabled": False,
+    "creator_subscriptions_tweet_preview_api_enabled": True,
+    "responsive_web_graphql_timeline_navigation_enabled": True,
+    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+    "c9s_tweet_anatomy_moderator_badge_enabled": True,
+    "tweetypie_unmention_optimization_enabled": True,
+    "responsive_web_edit_tweet_api_enabled": True,
+    "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+    "view_counts_everywhere_api_enabled": True,
+    "longform_notetweets_consumption_enabled": True,
+    "responsive_web_twitter_article_tweet_consumption_enabled": True,
+    "tweet_awards_web_tipping_enabled": False,
+    "longform_notetweets_rich_text_read_enabled": True,
+    "longform_notetweets_inline_media_enabled": True,
+    "rweb_video_timestamps_enabled": True,
+    "responsive_web_media_download_video_enabled": True,
+    "freedom_of_speech_not_reach_fetch_enabled": True,
+    "standardized_nudges_misinfo": True,
+    "responsive_web_enhance_cards_enabled": False,
+}
+
+# ── HTTP session ────────────────────────────────────────────────────────────
+
+_session: Optional[cffi_requests.Session] = None
+
+def _get_session() -> cffi_requests.Session:
+    global _session
+    if _session is None:
+        _session = cffi_requests.Session(impersonate="chrome")
+    return _session
+
+def _headers() -> Dict[str, str]:
+    return {
+        "authorization": f"Bearer {BEARER}",
+        "content-type": "application/json",
+        "x-csrf-token": CT0,
+        "cookie": f"auth_token={AUTH_TOKEN}; ct0={CT0}",
+        "x-twitter-auth-type": "OAuth2Session",
+        "x-twitter-active-user": "yes",
+        "x-twitter-client-language": "en",
+        "referer": "https://x.com/",
+        "origin": "https://x.com",
+    }
+
+# ── Query ID resolution ──────────────────────────────────────────────────────
+
+_OPENAPI_URL = (
+    "https://raw.githubusercontent.com/fa0311/"
+    "twitter-openapi/refs/heads/main/src/config/placeholder.json"
+)
+
+def _resolve_query_id(operation: str, refresh: bool = False) -> str:
+    """Return queryId, refreshing from community source if refresh=True."""
+    if refresh:
+        try:
+            resp = _get_session().get(_OPENAPI_URL, headers={"user-agent": "curl/8.0"}, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                qid = data.get(operation, {}).get("queryId")
+                if qid:
+                    QUERY_IDS[operation] = qid
+                    return qid
+        except Exception:
+            pass
+    return QUERY_IDS.get(operation, "")
+
+# ── GraphQL URL builder ──────────────────────────────────────────────────────
+
+def _gql_url(operation: str, variables: Dict[str, Any], features: Optional[Dict[str, bool]] = None) -> str:
+    qid = _resolve_query_id(operation)
+    feat = {k: v for k, v in (features or FEATURES).items() if v is not False}
+    return (
+        f"https://x.com/i/api/graphql/{qid}/{operation}"
+        f"?variables={urllib.parse.quote(json.dumps(variables, separators=(',', ':')))}"
+        f"&features={urllib.parse.quote(json.dumps(feat, separators=(',', ':')))}"
+    )
+
+def _gql_get(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
+    url = _gql_url(operation, variables)
+    resp = _get_session().get(url, headers=_headers(), timeout=20)
+    if resp.status_code in (400, 403):
+        # Query ID may have rotated — refresh once
+        _resolve_query_id(operation, refresh=True)
+        url = _gql_url(operation, variables)
+        resp = _get_session().get(url, headers=_headers(), timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+def _gql_post(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
+    qid = _resolve_query_id(operation)
+    url = f"https://x.com/i/api/graphql/{qid}/{operation}"
+    body = {"variables": variables, "queryId": qid}
+    resp = _get_session().post(url, headers=_headers(), json=body, timeout=20)
+    if resp.status_code in (400, 403):
+        _resolve_query_id(operation, refresh=True)
+        qid = QUERY_IDS.get(operation, qid)
+        url = f"https://x.com/i/api/graphql/{qid}/{operation}"
+        body["queryId"] = qid
+        resp = _get_session().post(url, headers=_headers(), json=body, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+# ── Response parsers ─────────────────────────────────────────────────────────
+
+def _dig(obj: Any, *keys: str, default: Any = None) -> Any:
+    for k in keys:
+        if not isinstance(obj, dict):
+            return default
+        obj = obj.get(k)
+        if obj is None:
+            return default
+    return obj
+
+def _parse_tweet(result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not result:
+        return None
+    if result.get("__typename") == "TweetWithVisibilityResults":
+        result = result.get("tweet", result)
+    if result.get("__typename") == "TweetTombstone":
+        return None
+
+    legacy = result.get("legacy") or {}
+    core = result.get("core") or {}
+    user_legacy = _dig(core, "user_results", "result", "legacy") or {}
+    views = result.get("views") or {}
+
+    tweet_id = legacy.get("id_str") or result.get("rest_id") or ""
+    screen_name = user_legacy.get("screen_name", "")
+
+    return {
+        "id": tweet_id,
+        "text": legacy.get("full_text", ""),
+        "author": {
+            "screenName": screen_name,
+            "name": user_legacy.get("name", ""),
+            "id": _dig(core, "user_results", "result", "rest_id", default=""),
+        },
+        "metrics": {
+            "likes":     legacy.get("favorite_count", 0),
+            "retweets":  legacy.get("retweet_count", 0),
+            "replies":   legacy.get("reply_count", 0),
+            "views":     int(views.get("count") or 0),
+            "quotes":    legacy.get("quote_count", 0),
+        },
+        "createdAtISO": legacy.get("created_at", ""),
+    }
+
+def _parse_user(result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not result:
+        return None
+    legacy = result.get("legacy") or {}
+    return {
+        "id":          result.get("rest_id", ""),
+        "screenName":  legacy.get("screen_name", ""),
+        "name":        legacy.get("name", ""),
+        "description": legacy.get("description", ""),
+        "followers":   legacy.get("followers_count", 0),
+        "following":   legacy.get("friends_count", 0),
+        "tweets":      legacy.get("statuses_count", 0),
+        "verified":    legacy.get("verified", False) or legacy.get("is_blue_verified", False),
+    }
+
+def _extract_instructions(data: Dict[str, Any], path: List[str]) -> List[Dict[str, Any]]:
+    node: Any = data
+    for key in path:
+        if not isinstance(node, dict):
+            return []
+        node = node.get(key)
+        if node is None:
+            return []
+    if isinstance(node, list):
+        return node
+    return []
+
+def _tweets_from_instructions(instructions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    tweets = []
+    for inst in instructions:
+        if inst.get("type") != "TimelineAddEntries":
+            continue
+        for entry in inst.get("entries", []):
+            entry_id = entry.get("entryId", "")
+            content = entry.get("content", {})
+            item_content = content.get("itemContent", {})
+
+            if entry_id.startswith("tweet-"):
+                result = _dig(item_content, "tweet_results", "result")
+                t = _parse_tweet(result)
+                if t:
+                    tweets.append(t)
+            elif entry_id.startswith("homeConversation-") or entry_id.startswith("profile-conversation-"):
+                # Conversation items contain a list of tweet items
+                for item in content.get("items", []):
+                    inner = _dig(item, "item", "itemContent", "tweet_results", "result")
+                    t = _parse_tweet(inner)
+                    if t:
+                        tweets.append(t)
+    return tweets
+
+def _users_from_instructions(instructions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    users = []
+    for inst in instructions:
+        if inst.get("type") != "TimelineAddEntries":
+            continue
+        for entry in inst.get("entries", []):
+            entry_id = entry.get("entryId", "")
+            if not entry_id.startswith("user-"):
+                continue
+            result = _dig(entry, "content", "itemContent", "user_results", "result")
+            u = _parse_user(result)
+            if u:
+                users.append(u)
+    return users
+
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+def cmd_feed(count: int = 20) -> None:
+    variables = {
+        "count": count,
+        "includePromotedContent": False,
+        "latestControlAvailable": True,
+        "requestContext": "launch",
+        "withCommunity": True,
+    }
+    data = _gql_get("HomeTimeline", variables)
+    instructions = _extract_instructions(
+        data, ["data", "home", "home_timeline_urt", "instructions"]
+    )
+    tweets = _tweets_from_instructions(instructions)
+    _out(True, tweets)
+
+def cmd_search(query: str, count: int = 20) -> None:
+    variables = {
+        "rawQuery": query,
+        "count": count,
+        "querySource": "typed_query",
+        "product": "Top",
+    }
+    data = _gql_get("SearchTimeline", variables)
+    instructions = _extract_instructions(
+        data, ["data", "search_by_raw_query", "search_timeline", "timeline", "instructions"]
+    )
+    tweets = _tweets_from_instructions(instructions)
+    _out(True, tweets)
+
+def cmd_user_posts(username: str, count: int = 20) -> None:
+    # First resolve user ID
+    user_vars = {"screen_name": username, "withSafetyModeUserFields": True}
+    user_data = _gql_get("UserByScreenName", user_vars)
+    user_id = _dig(user_data, "data", "user", "result", "rest_id")
+    if not user_id:
+        _out(False, None, f"User not found: {username}")
+        return
+
+    variables = {
+        "userId": user_id,
+        "count": count,
+        "includePromotedContent": False,
+        "withQuickPromoteEligibilityTweetFields": False,
+        "withVoice": True,
+        "withV2Timeline": True,
+    }
+    data = _gql_get("UserTweets", variables)
+    instructions = _extract_instructions(
+        data, ["data", "user", "result", "timeline_v2", "timeline", "instructions"]
+    )
+    tweets = _tweets_from_instructions(instructions)
+    _out(True, tweets)
+
+def cmd_user(username: str) -> None:
+    variables = {"screen_name": username, "withSafetyModeUserFields": True}
+    data = _gql_get("UserByScreenName", variables)
+    result = _dig(data, "data", "user", "result")
+    u = _parse_user(result)
+    if not u:
+        _out(False, None, f"User not found: {username}")
+        return
+    _out(True, u)
+
+def cmd_tweet(tweet_id: str, count: int = 20) -> None:
+    variables = {
+        "focalTweetId": tweet_id,
+        "count": count,
+        "referrer": "tweet",
+        "with_rux_injections": False,
+        "includePromotedContent": False,
+        "withCommunity": True,
+        "withQuickPromoteEligibilityTweetFields": True,
+        "withBirdwatchNotes": True,
+        "withVoice": True,
+        "withV2Timeline": True,
+    }
+    data = _gql_get("TweetDetail", variables)
+    instructions = _extract_instructions(
+        data, ["data", "threaded_conversation_with_injections_v2", "instructions"]
+    )
+    tweets = _tweets_from_instructions(instructions)
+    if not tweets:
+        _out(False, None, "Tweet not found")
+        return
+    main = tweets[0]
+    thread = [t for t in tweets[1:] if t["id"] != tweet_id]
+    main["replies"] = thread[:count]  # embed replies so bridge can use data as CliTweet
+    _out(True, main)
+
+def cmd_followers(username: str, count: int = 20) -> None:
+    user_vars = {"screen_name": username, "withSafetyModeUserFields": True}
+    user_data = _gql_get("UserByScreenName", user_vars)
+    user_id = _dig(user_data, "data", "user", "result", "rest_id")
+    if not user_id:
+        _out(False, None, f"User not found: {username}")
+        return
+
+    variables = {"userId": user_id, "count": count, "includePromotedContent": False}
+    data = _gql_get("Followers", variables)
+    instructions = _extract_instructions(
+        data, ["data", "user", "result", "timeline", "timeline", "instructions"]
+    )
+    users = _users_from_instructions(instructions)
+    _out(True, users)
+
+def cmd_following(username: str, count: int = 20) -> None:
+    user_vars = {"screen_name": username, "withSafetyModeUserFields": True}
+    user_data = _gql_get("UserByScreenName", user_vars)
+    user_id = _dig(user_data, "data", "user", "result", "rest_id")
+    if not user_id:
+        _out(False, None, f"User not found: {username}")
+        return
+
+    variables = {"userId": user_id, "count": count, "includePromotedContent": False}
+    data = _gql_get("Following", variables)
+    instructions = _extract_instructions(
+        data, ["data", "user", "result", "timeline", "timeline", "instructions"]
+    )
+    users = _users_from_instructions(instructions)
+    _out(True, users)
+
+def cmd_bookmarks(count: int = 20) -> None:
+    variables = {
+        "count": count,
+        "includePromotedContent": False,
+    }
+    data = _gql_get("Bookmarks", variables)
+    instructions = _extract_instructions(
+        data, ["data", "bookmark_timeline_v2", "timeline", "instructions"]
+    )
+    tweets = _tweets_from_instructions(instructions)
+    _out(True, tweets)
+
+def cmd_list(list_id: str, count: int = 20) -> None:
+    variables = {"listId": list_id, "count": count}
+    data = _gql_get("ListLatestTweetsTimeline", variables)
+    instructions = _extract_instructions(
+        data, ["data", "list", "tweets_timeline", "timeline", "instructions"]
+    )
+    tweets = _tweets_from_instructions(instructions)
+    _out(True, tweets)
+
+def cmd_bookmark(tweet_id: str) -> None:
+    variables = {"tweet_id": tweet_id}
+    _gql_post("CreateBookmark", variables)
+    _out(True, {"bookmarked": True})
+
+def cmd_unbookmark(tweet_id: str) -> None:
+    variables = {"tweet_id": tweet_id}
+    _gql_post("DeleteBookmark", variables)
+    _out(True, {"bookmarked": False})
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+        sys.exit(1)
+
+    cmd = args[0]
+    rest = args[1:]
+
+    # Parse --count N from rest args
+    count = 20
+    filtered: List[str] = []
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--count" and i + 1 < len(rest):
+            try:
+                count = int(rest[i + 1])
+            except ValueError:
+                pass
+            i += 2
+        else:
+            filtered.append(rest[i])
+            i += 1
+    rest = filtered
+
+    try:
+        if cmd == "feed":
+            cmd_feed(count)
+        elif cmd == "search":
+            if not rest:
+                _out(False, None, "search requires a query argument")
+            else:
+                cmd_search(rest[0], count)
+        elif cmd == "user-posts":
+            if not rest:
+                _out(False, None, "user-posts requires a username argument")
+            else:
+                cmd_user_posts(rest[0], count)
+        elif cmd == "user":
+            if not rest:
+                _out(False, None, "user requires a username argument")
+            else:
+                cmd_user(rest[0])
+        elif cmd == "tweet":
+            if not rest:
+                _out(False, None, "tweet requires a tweet_id argument")
+            else:
+                cmd_tweet(rest[0], count)
+        elif cmd == "followers":
+            if not rest:
+                _out(False, None, "followers requires a username argument")
+            else:
+                cmd_followers(rest[0], count)
+        elif cmd == "following":
+            if not rest:
+                _out(False, None, "following requires a username argument")
+            else:
+                cmd_following(rest[0], count)
+        elif cmd == "bookmarks":
+            cmd_bookmarks(count)
+        elif cmd == "list":
+            if not rest:
+                _out(False, None, "list requires a list_id argument")
+            else:
+                cmd_list(rest[0], count)
+        elif cmd == "bookmark":
+            if not rest:
+                _out(False, None, "bookmark requires a tweet_id argument")
+            else:
+                cmd_bookmark(rest[0])
+        elif cmd == "unbookmark":
+            if not rest:
+                _out(False, None, "unbookmark requires a tweet_id argument")
+            else:
+                cmd_unbookmark(rest[0])
+        else:
+            _out(False, None, f"Unknown command: {cmd}")
+            sys.exit(1)
+    except Exception as exc:
+        _out(False, None, str(exc))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

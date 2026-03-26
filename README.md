@@ -23,17 +23,17 @@ Most social CLIs are built for humans. crossmind is built for AI agents:
 
 ## Token Benchmark
 
-Measured on `x search "AI agent" 10` against the twitter-cli bridge JSON output (the raw format agents would otherwise consume):
+Measured on `x search "AI agent" 10` against raw X GraphQL JSON output (the format agents would otherwise consume):
 
 | Format | Bytes | Approx tokens | vs raw |
 |--------|-------|---------------|--------|
-| Raw twitter-cli JSON | 15,568 | ~3,892 | baseline |
+| Raw X GraphQL JSON | 15,568 | ~3,892 | baseline |
 | `crossmind x search` (compact) | 2,663 | ~666 | **−83%** |
 | `crossmind x search --json` | 4,687 | ~1,172 | **−70%** |
 
-Per tweet: raw bridge averages 1,556 bytes (full JSON object with author, metrics, urls, media, timestamps). crossmind compact line averages 266 bytes — ~5.8× smaller.
+Per tweet: raw GraphQL response averages 1,556 bytes (full JSON object with author, metrics, urls, media, timestamps). crossmind compact line averages 266 bytes — ~5.8× smaller.
 
-The bridge JSON is already stripped down from the full v2 REST response (no entities, no referenced_tweets, no full user objects). Against a raw API call with standard field expansions, the reduction is larger.
+The raw JSON is already stripped down from the full v2 REST response (no entities, no referenced_tweets, no full user objects). Against a raw API call with standard field expansions, the reduction is larger.
 
 ## Quick Start
 
@@ -102,7 +102,7 @@ crossmind hn top 5 --json
 
 X auth follows a priority chain:
 
-1. **Cookie auth** (`auth_token` + `ct0`) — routes through the twitter-cli bridge, which uses `curl_cffi` Chrome TLS fingerprint impersonation. Enables full read access including home feed, bookmarks, and DM history.
+1. **Cookie auth** (`auth_token` + `ct0`) — routes through the built-in `scripts/x-fetch.py` bridge, which uses `curl_cffi` Chrome TLS fingerprint impersonation. Enables full read access including home feed, bookmarks, and DM history.
 2. **OAuth 2.0 token** (`X_ACCESS_TOKEN` or stored `accessToken`) — standard v2 REST API. Required for write operations (post, like, retweet, follow, DM send) and for reading likes.
 3. **Public bearer** — no config needed. Supports search only.
 
@@ -262,8 +262,8 @@ crossmind x follow <username>
 crossmind x unfollow <username>
 crossmind x dm <username> <text>
 crossmind x delete <tweet_id>
-crossmind x bookmark <tweet_id>     # cookie + twitter-cli required
-crossmind x unbookmark <tweet_id>   # cookie + twitter-cli required
+crossmind x bookmark <tweet_id>     # cookie + curl_cffi required
+crossmind x unbookmark <tweet_id>   # cookie + curl_cffi required
 ```
 
 ### Reddit (`reddit`)
@@ -427,7 +427,7 @@ crossmind x home
     │   └─ merges env vars (X_ACCESS_TOKEN, X_AUTH_TOKEN, X_CT0)
     │
     ├─ hasCookieAuth? (authToken + ct0)
-    │   └─ YES → twitter-cli bridge (Python curl_cffi, Chrome TLS)
+    │   └─ YES → x-fetch.py bridge (Python curl_cffi, Chrome TLS)
     │              └─ x.com/i/api/graphql (GraphQL, full feed)
     │
     └─ accessToken? (OAuth)
@@ -435,14 +435,14 @@ crossmind x home
         └─ NO  → error: "Set X_ACCESS_TOKEN or run: crossmind auth login x"
 ```
 
-The twitter-cli bridge (`uvx install twitter-cli`) handles X's Chrome TLS fingerprint check. Without it, Node.js's native `fetch()` is rejected by X's bot detection. When the bridge is unavailable, the CLI falls back to the v2 REST API.
+The bundled `scripts/x-fetch.py` handles X's Chrome TLS fingerprint check. Without it, Node.js's native `fetch()` is rejected by X's bot detection. When the bridge is unavailable, the CLI falls back to the v2 REST API.
 
 ## Runtime Dependencies
 
 For X cookie-auth commands (home feed, bookmarks, DMs):
 ```bash
-uv tool install twitter-cli
-# or: pip install twitter-cli
+uv pip install curl_cffi
+# or: pip install curl_cffi
 ```
 
 Verify:
@@ -454,7 +454,7 @@ crossmind auth status
 
 - Node.js 20+
 - pnpm or npm
-- For X cookie reads: `twitter-cli` (`uvx install twitter-cli`)
+- For X cookie reads: Python 3 with `curl_cffi` (`uv pip install curl_cffi`)
 
 ## License
 

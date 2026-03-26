@@ -1,77 +1,84 @@
 /**
- * twitter-cli subprocess bridge.
+ * X cookie-auth client — subprocess bridge to scripts/x-fetch.py.
  *
- * x.com's GraphQL API requires Chrome TLS fingerprinting (JA3/JA4).
- * Node.js's fetch() has a different fingerprint → x.com returns 404.
- * twitter-cli uses curl_cffi (Chrome impersonation) and works correctly.
+ * X's GraphQL endpoints require Chrome TLS fingerprinting (JA3/JA4).
+ * Node.js fetch() has a different fingerprint → X returns 404.
+ * The bundled scripts/x-fetch.py uses curl_cffi (Chrome impersonation).
  *
- * When cookie credentials (auth_token + ct0) are available AND twitter-cli
- * is installed, we delegate to twitter-cli via subprocess.
+ * Python discovery order:
+ *   1. python3 (system Python)
+ *   2. python
  *
- * Binary discovery order:
- *   1. TWITTER_CLI_PATH env var
- *   2. /root/.local/share/uv/tools/twitter-cli/bin/twitter (uv-installed)
- *   3. Not available → caller falls back to v2 REST
+ * Script: <package-root>/scripts/x-fetch.py (bundled with the npm package)
+ *
+ * Install curl_cffi (one-time):
+ *   uv pip install curl_cffi
  */
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { access, constants } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { XTweet, XUser } from '../platforms/x/read.js';
 
 const execFileAsync = promisify(execFile);
 
-const KNOWN_PATHS = [
-  '/root/.local/share/uv/tools/twitter-cli/bin/twitter',
-  '/home/.local/share/uv/tools/twitter-cli/bin/twitter',
-];
+// scripts/x-fetch.py is two levels up from dist/http/
+const __dir = path.dirname(fileURLToPath(import.meta.url));
+const SCRIPT_PATH = path.resolve(__dir, '../../scripts/x-fetch.py');
 
-let _resolvedPath: string | null | undefined = undefined; // undefined = not yet checked
+const PYTHON_CANDIDATES = ['python3', 'python'];
 
-/** Resolve twitter-cli binary path. Returns null if not found. */
-async function resolveTwitterCli(): Promise<string | null> {
-  if (_resolvedPath !== undefined) return _resolvedPath;
+let _resolvedPython: string | null | undefined = undefined;
 
-  // Explicit override
-  const envPath = process.env['TWITTER_CLI_PATH'];
-  if (envPath) {
-    try {
-      await access(envPath, constants.X_OK);
-      return (_resolvedPath = envPath);
-    } catch { /* not found */ }
+/** Resolve Python binary. Returns null if not found. */
+async function resolvePython(): Promise<string | null> {
+  if (_resolvedPython !== undefined) return _resolvedPython;
+
+  try {
+    await access(SCRIPT_PATH, constants.R_OK);
+  } catch {
+    return (_resolvedPython = null);
   }
 
-  // Known install locations
-  for (const p of KNOWN_PATHS) {
+  for (const candidate of PYTHON_CANDIDATES) {
     try {
-      await access(p, constants.X_OK);
-      return (_resolvedPath = p);
-    } catch { /* not found */ }
+      await execFileAsync(candidate, ['--version'], { timeout: 3_000 });
+      return (_resolvedPython = candidate);
+    } catch { /* try next */ }
   }
 
-  return (_resolvedPath = null);
+  return (_resolvedPython = null);
 }
 
-/** Returns true if twitter-cli is available. */
-export async function isTwitterCliAvailable(): Promise<boolean> {
-  return (await resolveTwitterCli()) !== null;
+/** Returns true if the cookie-auth client (x-fetch.py + Python) is available. */
+export async function isCookieClientAvailable(): Promise<boolean> {
+  return (await resolvePython()) !== null;
 }
 
-/** Run twitter-cli with env-injected cookies and return parsed JSON. */
-async function runCli<T>(
+/** Run x-fetch.py with cookie credentials injected via env. */
+async function runFetch<T>(
   creds: { authToken: string; ct0: string },
   args: string[]
 ): Promise<T> {
-  const bin = await resolveTwitterCli();
-  if (!bin) throw new Error('twitter-cli not found');
+  const python = await resolvePython();
+  if (!python) {
+    throw new Error(
+      'Python not found. Cookie-auth X features require Python 3.\n' +
+      '  Install Python: https://python.org/downloads\n' +
+      '  Then install curl_cffi: uv pip install curl_cffi\n' +
+      '  Or use OAuth: crossmind auth login x --access-token <token>'
+    );
+  }
 
   const env = {
     ...process.env,
-    TWITTER_AUTH_TOKEN: creds.authToken,
-    TWITTER_CT0: creds.ct0,
+    X_AUTH_TOKEN: creds.authToken,
+    X_CT0: creds.ct0,
   };
 
-  const { stdout } = await execFileAsync(bin, [...args, '--json'], {
+  const { stdout } = await execFileAsync(python, [SCRIPT_PATH, ...args], {
     env,
     timeout: 20_000,
     maxBuffer: 10 * 1024 * 1024,
@@ -80,7 +87,7 @@ async function runCli<T>(
   return JSON.parse(stdout) as T;
 }
 
-// ── twitter-cli JSON shapes ──────────────────────────────────────────────────
+// ── Response shapes ────────────────────────────────────────────────────────
 
 interface CliTweet {
   id: string;
@@ -89,6 +96,7 @@ interface CliTweet {
   metrics: { likes: number; retweets: number; replies: number; views?: number; quotes?: number };
   createdAtISO?: string;
   createdAt?: string;
+  replies?: CliTweet[];
 }
 
 interface CliUser {
@@ -125,49 +133,50 @@ function mapCliTweet(t: CliTweet, rank: number): XTweet {
   };
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+function mapCliUser(u: CliUser, rank: number): XUser {
+  return {
+    rank,
+    username: u.screenName ?? '',
+    name: u.name ?? '',
+    followers: u.followers ?? 0,
+    following: u.following ?? 0,
+    tweets: u.tweets ?? 0,
+    bio: (u.bio ?? u.description ?? '').slice(0, 160),
+    verified: String(u.verified ?? false),
+    url: `https://twitter.com/${u.screenName ?? ''}`,
+  };
+}
 
-/** Search tweets via twitter-cli. */
+// ── Public API ─────────────────────────────────────────────────────────────
+
 export async function bridgeSearchTweets(
-  query: string,
-  limit: number,
-  creds: { authToken: string; ct0: string }
+  query: string, limit: number, creds: { authToken: string; ct0: string }
 ): Promise<XTweet[]> {
-  const result = await runCli<CliResponse<CliTweet[]>>(creds, ['search', query]);
-  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli search failed');
-  const tweets = (result.data ?? []).slice(0, limit);
-  return tweets.map((t, i) => mapCliTweet(t, i + 1));
+  const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['search', query, '--count', String(limit)]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Search failed');
+  return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
 }
 
-/** Get home feed via twitter-cli. */
 export async function bridgeFeed(
-  limit: number,
-  creds: { authToken: string; ct0: string }
+  limit: number, creds: { authToken: string; ct0: string }
 ): Promise<XTweet[]> {
-  const result = await runCli<CliResponse<CliTweet[]>>(creds, ['feed']);
-  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli feed failed');
-  const tweets = (result.data ?? []).slice(0, limit);
-  return tweets.map((t, i) => mapCliTweet(t, i + 1));
+  const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['feed', '--count', String(limit)]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Feed failed');
+  return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
 }
 
-/** Get user timeline via twitter-cli. */
 export async function bridgeUserTimeline(
-  username: string,
-  limit: number,
-  creds: { authToken: string; ct0: string }
+  username: string, limit: number, creds: { authToken: string; ct0: string }
 ): Promise<XTweet[]> {
-  const result = await runCli<CliResponse<CliTweet[]>>(creds, ['user-posts', username]);
-  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli user-posts failed');
-  const tweets = (result.data ?? []).slice(0, limit);
-  return tweets.map((t, i) => mapCliTweet(t, i + 1));
+  const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['user-posts', username, '--count', String(limit)]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'User timeline failed');
+  return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
 }
 
-/** Get user profile via twitter-cli. */
 export async function bridgeUserProfile(
-  username: string,
-  creds: { authToken: string; ct0: string }
+  username: string, creds: { authToken: string; ct0: string }
 ): Promise<XUser | null> {
-  const result = await runCli<CliResponse<CliUser>>(creds, ['user', username]);
+  const result = await runFetch<CliResponse<CliUser>>(creds, ['user', username]);
   if (!result.ok) return null;
   const u = result.data;
   if (!u) return null;
@@ -184,106 +193,60 @@ export async function bridgeUserProfile(
   };
 }
 
-/** Get tweet + reply thread via twitter-cli. */
 export async function bridgeTweet(
-  tweetId: string,
-  limit: number,
-  creds: { authToken: string; ct0: string }
+  tweetId: string, limit: number, creds: { authToken: string; ct0: string }
 ): Promise<{ tweet: XTweet; thread: XTweet[] }> {
-  // twitter tweet returns either an array (tweet + replies) or object with replies field
-  const result = await runCli<CliResponse<CliTweet | CliTweet[]>>(creds, ['tweet', tweetId]);
-  if (!result.ok) throw new Error((result.error?.message) ?? 'twitter-cli tweet failed');
-
-  let main: CliTweet;
-  let replies: CliTweet[] = [];
-
-  if (Array.isArray(result.data)) {
-    const [first, ...rest] = result.data as CliTweet[];
-    main = first;
-    replies = rest;
-  } else {
-    const obj = result.data as CliTweet & { replies?: CliTweet[] };
-    main = obj;
-    replies = obj.replies ?? [];
-  }
-
+  const result = await runFetch<CliResponse<CliTweet>>(creds, ['tweet', tweetId, '--count', String(limit)]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Tweet fetch failed');
+  const main = result.data;
   return {
     tweet: mapCliTweet(main, 1),
-    thread: replies.slice(0, limit).map((t, i) => mapCliTweet(t, i + 1)),
+    thread: (main.replies ?? []).map((t, i) => mapCliTweet(t, i + 1)),
   };
 }
 
-function mapCliUser(u: CliUser, rank: number): XUser {
-  return {
-    rank,
-    username: u.screenName ?? '',
-    name: u.name ?? '',
-    followers: u.followers ?? 0,
-    following: u.following ?? 0,
-    tweets: u.tweets ?? 0,
-    bio: (u.bio ?? u.description ?? '').slice(0, 160),
-    verified: String(u.verified ?? false),
-    url: `https://twitter.com/${u.screenName ?? ''}`,
-  };
-}
-
-/** Get user followers via twitter-cli. */
 export async function bridgeFollowers(
-  username: string,
-  limit: number,
-  creds: { authToken: string; ct0: string }
+  username: string, limit: number, creds: { authToken: string; ct0: string }
 ): Promise<XUser[]> {
-  const result = await runCli<CliResponse<CliUser[]>>(creds, ['followers', username]);
-  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli followers failed');
+  const result = await runFetch<CliResponse<CliUser[]>>(creds, ['followers', username, '--count', String(limit)]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Followers failed');
   return (result.data ?? []).slice(0, limit).map((u, i) => mapCliUser(u, i + 1));
 }
 
-/** Get accounts user follows via twitter-cli. */
 export async function bridgeFollowing(
-  username: string,
-  limit: number,
-  creds: { authToken: string; ct0: string }
+  username: string, limit: number, creds: { authToken: string; ct0: string }
 ): Promise<XUser[]> {
-  const result = await runCli<CliResponse<CliUser[]>>(creds, ['following', username]);
-  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli following failed');
+  const result = await runFetch<CliResponse<CliUser[]>>(creds, ['following', username, '--count', String(limit)]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Following failed');
   return (result.data ?? []).slice(0, limit).map((u, i) => mapCliUser(u, i + 1));
 }
 
-/** Get bookmarks via twitter-cli (cookie required). */
 export async function bridgeBookmarks(
-  limit: number,
-  creds: { authToken: string; ct0: string }
+  limit: number, creds: { authToken: string; ct0: string }
 ): Promise<XTweet[]> {
-  const result = await runCli<CliResponse<CliTweet[]>>(creds, ['bookmarks']);
-  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli bookmarks failed');
+  const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['bookmarks', '--count', String(limit)]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Bookmarks failed');
   return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
 }
 
-/** Get list tweets via twitter-cli. */
 export async function bridgeListTweets(
-  listId: string,
-  limit: number,
-  creds: { authToken: string; ct0: string }
+  listId: string, limit: number, creds: { authToken: string; ct0: string }
 ): Promise<XTweet[]> {
-  const result = await runCli<CliResponse<CliTweet[]>>(creds, ['list', listId]);
-  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli list failed');
+  const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['list', listId, '--count', String(limit)]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'List tweets failed');
   return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
 }
 
-/** Bookmark a tweet via twitter-cli. */
 export async function bridgeBookmark(
-  tweetId: string,
-  creds: { authToken: string; ct0: string }
+  tweetId: string, creds: { authToken: string; ct0: string }
 ): Promise<void> {
-  const result = await runCli<CliResponse<unknown>>(creds, ['bookmark', tweetId]);
-  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli bookmark failed');
+  const result = await runFetch<CliResponse<unknown>>(creds, ['bookmark', tweetId]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Bookmark failed');
 }
 
-/** Remove a bookmark via twitter-cli. */
 export async function bridgeUnbookmark(
-  tweetId: string,
-  creds: { authToken: string; ct0: string }
+  tweetId: string, creds: { authToken: string; ct0: string }
 ): Promise<void> {
-  const result = await runCli<CliResponse<unknown>>(creds, ['unbookmark', tweetId]);
-  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli unbookmark failed');
+  const result = await runFetch<CliResponse<unknown>>(creds, ['unbookmark', tweetId]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Unbookmark failed');
 }

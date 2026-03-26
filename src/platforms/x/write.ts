@@ -13,7 +13,7 @@ import { loadXCredentials } from '../../auth/x.js';
 import { checkWriteLimit, writeDelay } from '../../http/rate-limiter.js';
 import { AuthError } from '../../http/client.js';
 import {
-  isTwitterCliAvailable,
+  isCookieClientAvailable,
   bridgeBookmark,
   bridgeUnbookmark,
 } from '../../http/x-bridge.js';
@@ -308,7 +308,7 @@ export async function unfollowUser(
   return { success: true, message: `unfollowed:@${username}` };
 }
 
-/** Bookmark a tweet (cookie + twitter-cli required) */
+/** Bookmark a tweet (cookie auth + curl_cffi required) */
 export async function bookmarkTweet(
   tweetId: string,
   account?: string,
@@ -316,14 +316,18 @@ export async function bookmarkTweet(
 ): Promise<WriteResult> {
   const creds = await getXCreds(account, dataDir);
   requireCookie(creds);
-  if (!await isTwitterCliAvailable()) {
-    throw new Error('Bookmarks require twitter-cli. Install: uvx install twitter-cli');
+  if (!await isCookieClientAvailable()) {
+    throw new Error(
+      'Bookmarks require Python 3 with curl_cffi.\n' +
+      '  Install: uv pip install curl_cffi\n' +
+      '  Or: pip install curl_cffi'
+    );
   }
   await bridgeBookmark(tweetId, creds as { authToken: string; ct0: string });
   return { success: true, message: `bookmarked:${tweetId}` };
 }
 
-/** Remove a bookmark (cookie + twitter-cli required) */
+/** Remove a bookmark (cookie auth + curl_cffi required) */
 export async function unbookmarkTweet(
   tweetId: string,
   account?: string,
@@ -331,8 +335,12 @@ export async function unbookmarkTweet(
 ): Promise<WriteResult> {
   const creds = await getXCreds(account, dataDir);
   requireCookie(creds);
-  if (!await isTwitterCliAvailable()) {
-    throw new Error('Bookmarks require twitter-cli. Install: uvx install twitter-cli');
+  if (!await isCookieClientAvailable()) {
+    throw new Error(
+      'Bookmarks require Python 3 with curl_cffi.\n' +
+      '  Install: uv pip install curl_cffi\n' +
+      '  Or: pip install curl_cffi'
+    );
   }
   await bridgeUnbookmark(tweetId, creds as { authToken: string; ct0: string });
   return { success: true, message: `unbookmarked:${tweetId}` };

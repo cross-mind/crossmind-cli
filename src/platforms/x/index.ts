@@ -416,7 +416,7 @@ export function registerX(program: Command): void {
 
   x
     .command('bookmark <tweet_id>')
-    .description('Bookmark a tweet (requires cookie auth + twitter-cli)')
+    .description('Bookmark a tweet (requires cookie auth + Python curl_cffi)')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .action(async (tweetId: string, opts: { account?: string; dataDir?: string }) => {
@@ -431,7 +431,7 @@ export function registerX(program: Command): void {
 
   x
     .command('unbookmark <tweet_id>')
-    .description('Remove a bookmark (requires cookie auth + twitter-cli)')
+    .description('Remove a bookmark (requires cookie auth + Python curl_cffi)')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .action(async (tweetId: string, opts: { account?: string; dataDir?: string }) => {
