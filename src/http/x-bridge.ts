@@ -237,6 +237,14 @@ export async function bridgeListTweets(
   return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
 }
 
+export async function bridgeReply(
+  tweetId: string, text: string, creds: { authToken: string; ct0: string }
+): Promise<{ id: string }> {
+  const result = await runFetch<CliResponse<{ id: string }>>(creds, ['reply', tweetId, text]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Reply failed');
+  return result.data;
+}
+
 export async function bridgeBookmark(
   tweetId: string, creds: { authToken: string; ct0: string }
 ): Promise<void> {

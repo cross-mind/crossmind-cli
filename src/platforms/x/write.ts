@@ -14,6 +14,7 @@ import { checkWriteLimit, writeDelay } from '../../http/rate-limiter.js';
 import { AuthError } from '../../http/client.js';
 import {
   isCookieClientAvailable,
+  bridgeReply,
   bridgeBookmark,
   bridgeUnbookmark,
 } from '../../http/x-bridge.js';
@@ -23,10 +24,9 @@ async function getXCreds(account?: string, dataDir?: string) {
   const creds = await loadXCredentials(account, dataDir);
   if (!creds?.accessToken && (!creds?.authToken || !creds?.ct0)) {
     throw new AuthError(
-      'X write operations require OAuth.\n' +
-      '  Set X_ACCESS_TOKEN, or run: crossmind auth login x --access-token <token>\n' +
-      '  No Developer App? Get a token at https://crossmind.io\n' +
-      '  Setup guide: https://crossmind.io/docs/x-setup'
+      'X write operations require OAuth or cookie auth.\n' +
+      '  OAuth: Set X_ACCESS_TOKEN, or run: crossmind auth login x --access-token <token>\n' +
+      '  Cookie: crossmind auth extract-cookie x'
     );
   }
   return creds!;
@@ -80,20 +80,45 @@ export async function replyToTweet(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
-  const data = await xRequest<{ data: { id: string } }>(
-    '/2/tweets',
-    {
-      method: 'POST',
-      creds,
-      body: { text, reply: { in_reply_to_tweet_id: tweetId } },
+  try {
+    const data = await xRequest<{ data: { id: string } }>(
+      '/2/tweets',
+      {
+        method: 'POST',
+        creds,
+        body: { text, reply: { in_reply_to_tweet_id: tweetId } },
+      }
+    );
+    return {
+      success: true,
+      id: data.data.id,
+      message: `replied:${data.data.id} to:${tweetId}`,
+    };
+  } catch (err) {
+    // Free tier API often returns 403 for cold replies (no prior engagement).
+    // Fallback to cookie auth via GraphQL, which has no such restriction.
+    if (err instanceof AuthError && /HTTP 403/.test(err.message)) {
+      if (!creds.authToken || !creds.ct0) {
+        throw new AuthError(
+          `X Free tier API blocked this reply (${err.message.split(' — ')[1] ?? 'policy restriction'}).\n` +
+          '  Add cookie auth for unrestricted replies: crossmind auth extract-cookie x'
+        );
+      }
+      if (!await isCookieClientAvailable()) {
+        throw new Error(
+          'X Free tier API blocked this reply. Cookie fallback needs Python 3 + curl_cffi.\n' +
+          '  Install: uv pip install curl_cffi'
+        );
+      }
+      const result = await bridgeReply(tweetId, text, creds as { authToken: string; ct0: string });
+      return {
+        success: true,
+        id: result.id,
+        message: `replied:${result.id} to:${tweetId} (cookie)`,
+      };
     }
-  );
-
-  return {
-    success: true,
-    id: data.data.id,
-    message: `replied:${data.data.id} to:${tweetId}`,
-  };
+    throw err;
+  }
 }
 
 /** Like a tweet */

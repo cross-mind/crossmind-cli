@@ -85,6 +85,7 @@ QUERY_IDS: Dict[str, str] = {
     "ListLatestTweetsTimeline": "ZBbXrl0FVnTqp7K6EAADog",
     "CreateBookmark":           "aoDbu3RHznuiSkQ9aNM67Q",
     "DeleteBookmark":           "Wlmlj2-xISYCixDmuS8KNg",
+    "CreateTweet":              "tTsjMKyhajZvK4q76mpIbg",
 }
 
 FEATURES: Dict[str, bool] = {
@@ -456,6 +457,21 @@ def cmd_unbookmark(tweet_id: str) -> None:
     _gql_post("DeleteBookmark", variables)
     _out(True, {"bookmarked": False})
 
+def cmd_reply(tweet_id: str, text: str) -> None:
+    variables = {
+        "tweet_text": text,
+        "reply": {
+            "in_reply_to_tweet_id": tweet_id,
+            "exclude_reply_user_ids": [],
+        },
+        "dark_request": False,
+        "media": {"media_entities": [], "possibly_sensitive": False},
+        "semantic_annotation_ids": [],
+    }
+    result = _gql_post("CreateTweet", variables)
+    new_id = _dig(result, "data", "create_tweet", "tweet_results", "result", "rest_id", default="")
+    _out(True, {"id": new_id})
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -533,6 +549,11 @@ def main() -> None:
                 _out(False, None, "unbookmark requires a tweet_id argument")
             else:
                 cmd_unbookmark(rest[0])
+        elif cmd == "reply":
+            if len(rest) < 2:
+                _out(False, None, "reply requires tweet_id and text arguments")
+            else:
+                cmd_reply(rest[0], rest[1])
         else:
             _out(False, None, f"Unknown command: {cmd}")
             sys.exit(1)
