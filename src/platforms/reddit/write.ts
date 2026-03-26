@@ -1,17 +1,66 @@
 /**
  * Reddit write operations.
- * Comment, vote, save, subscribe.
- * Requires OAuth authentication.
+ * Comment, vote, save, subscribe, post.
+ *
+ * Auth priority: session cookie (www.reddit.com) → OAuth (oauth.reddit.com)
+ * Both are supported — session cookie is the default after extract-cookie reddit.
  */
 
-import { request } from '../../http/client.js';
-import { getRedditToken, REDDIT_API, redditHeaders } from '../../auth/reddit.js';
+import { request, AuthError } from '../../http/client.js';
+import {
+  loadRedditCredentials, REDDIT_API, redditHeaders, redditCookieHeaders,
+} from '../../auth/reddit.js';
 import { checkWriteLimit, writeDelay } from '../../http/rate-limiter.js';
 
 export interface RedditWriteResult {
   success: boolean;
   id?: string;
   message: string;
+}
+
+interface WriteConfig {
+  baseUrl: string;
+  headers: Record<string, string>;
+}
+
+/**
+ * Resolve the appropriate base URL and auth headers based on stored credentials.
+ * Cookie auth uses www.reddit.com; OAuth uses oauth.reddit.com.
+ * Fetches modhash on-demand when cookie auth is used and modhash is not stored.
+ */
+async function getWriteConfig(account?: string, dataDir?: string): Promise<WriteConfig> {
+  const creds = await loadRedditCredentials(account, dataDir);
+
+  if (!creds) {
+    throw new AuthError(
+      'Reddit auth required.\n' +
+      '  Cookie (recommended): crossmind extract-cookie reddit\n' +
+      '  OAuth: crossmind auth login reddit'
+    );
+  }
+
+  if (creds.type === 'cookie') {
+    let modhash = creds.modhash;
+
+    if (!modhash) {
+      // Fetch modhash from me.json — required for most write endpoints
+      const meData = await request<{ data: { modhash: string } }>(
+        'https://www.reddit.com/api/me.json',
+        { headers: redditCookieHeaders(creds.session) }
+      );
+      modhash = meData?.data?.modhash;
+    }
+
+    return {
+      baseUrl: 'https://www.reddit.com',
+      headers: redditCookieHeaders(creds.session, modhash),
+    };
+  }
+
+  return {
+    baseUrl: REDDIT_API,
+    headers: redditHeaders(creds.token),
+  };
 }
 
 /** Submit a comment on a post or reply to a comment */
@@ -22,7 +71,7 @@ export async function submitComment(
   dataDir?: string
 ): Promise<RedditWriteResult> {
   await checkWriteLimit('reddit', 'comment', dataDir);
-  const token = await getRedditToken(account, dataDir);
+  const { baseUrl, headers } = await getWriteConfig(account, dataDir);
   await writeDelay();
 
   const body = new URLSearchParams({
@@ -32,13 +81,10 @@ export async function submitComment(
   });
 
   const data = await request<{ json: { data: { things: Array<{ data: { id: string; name: string } }> } } }>(
-    `${REDDIT_API}/api/comment`,
+    `${baseUrl}/api/comment`,
     {
       method: 'POST',
-      headers: {
-        ...redditHeaders(token),
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
+      headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString() as unknown,
     }
   );
@@ -59,7 +105,7 @@ export async function vote(
   dataDir?: string
 ): Promise<RedditWriteResult> {
   await checkWriteLimit('reddit', 'upvote', dataDir);
-  const token = await getRedditToken(account, dataDir);
+  const { baseUrl, headers } = await getWriteConfig(account, dataDir);
   await writeDelay();
 
   const body = new URLSearchParams({
@@ -67,12 +113,9 @@ export async function vote(
     dir: String(direction),
   });
 
-  await request(`${REDDIT_API}/api/vote`, {
+  await request(`${baseUrl}/api/vote`, {
     method: 'POST',
-    headers: {
-      ...redditHeaders(token),
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
+    headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString() as unknown,
   });
 
@@ -87,16 +130,13 @@ export async function saveItem(
   dataDir?: string
 ): Promise<RedditWriteResult> {
   await checkWriteLimit('reddit', 'save', dataDir);
-  const token = await getRedditToken(account, dataDir);
+  const { baseUrl, headers } = await getWriteConfig(account, dataDir);
   await writeDelay();
 
   const body = new URLSearchParams({ id });
-  await request(`${REDDIT_API}/api/save`, {
+  await request(`${baseUrl}/api/save`, {
     method: 'POST',
-    headers: {
-      ...redditHeaders(token),
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
+    headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString() as unknown,
   });
 
@@ -111,27 +151,24 @@ export async function subscribeSubreddit(
   dataDir?: string
 ): Promise<RedditWriteResult> {
   await checkWriteLimit('reddit', 'subscribe', dataDir);
-  const token = await getRedditToken(account, dataDir);
+  const { baseUrl, headers } = await getWriteConfig(account, dataDir);
   await writeDelay();
 
-  // Need subreddit fullname
-  const infoData = await request<{ data: { children: Array<{ data: { name: string } }> } }>(
-    `${REDDIT_API}/r/${subreddit}/about.json`,
-    { headers: redditHeaders(token) }
+  // Need subreddit fullname (sr_name works for cookie auth too)
+  const infoData = await request<{ data: { name: string } }>(
+    `https://www.reddit.com/r/${subreddit}/about.json`,
+    { headers }
   );
-  const subredditName = (infoData as unknown as { data: { name: string } }).data?.name ?? '';
+  const subredditName = infoData?.data?.name ?? '';
 
   const body = new URLSearchParams({
     action,
     sr: subredditName,
   });
 
-  await request(`${REDDIT_API}/api/subscribe`, {
+  await request(`${baseUrl}/api/subscribe`, {
     method: 'POST',
-    headers: {
-      ...redditHeaders(token),
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
+    headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString() as unknown,
   });
 
@@ -148,7 +185,7 @@ export async function submitTextPost(
   dataDir?: string
 ): Promise<RedditWriteResult> {
   await checkWriteLimit('reddit', 'comment', dataDir);
-  const token = await getRedditToken(account, dataDir);
+  const { baseUrl, headers } = await getWriteConfig(account, dataDir);
   await writeDelay();
 
   const body = new URLSearchParams({
@@ -160,13 +197,10 @@ export async function submitTextPost(
   });
 
   const data = await request<{ json: { data: { id: string; name: string } } }>(
-    `${REDDIT_API}/api/submit`,
+    `${baseUrl}/api/submit`,
     {
       method: 'POST',
-      headers: {
-        ...redditHeaders(token),
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
+      headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString() as unknown,
     }
   );
@@ -179,50 +213,6 @@ export async function submitTextPost(
   };
 }
 
-/** Crosspost to another subreddit */
-export async function crosspost(
-  targetSubreddit: string,
-  postId: string,
-  title: string,
-  account?: string,
-  dataDir?: string
-): Promise<RedditWriteResult> {
-  await checkWriteLimit('reddit', 'comment', dataDir);
-  const token = await getRedditToken(account, dataDir);
-  await writeDelay();
-
-  // Strip t3_ prefix if present, Reddit needs the bare ID
-  const bareId = postId.replace(/^t3_/, '');
-
-  const body = new URLSearchParams({
-    api_type: 'json',
-    kind: 'crosspost',
-    sr: targetSubreddit,
-    title,
-    crosspost_fullname: `t3_${bareId}`,
-    resubmit: 'true',
-  });
-
-  const data = await request<{ json: { data: { id: string; name: string } } }>(
-    `${REDDIT_API}/api/submit`,
-    {
-      method: 'POST',
-      headers: {
-        ...redditHeaders(token),
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: body.toString() as unknown,
-    }
-  );
-
-  const newId = data?.json?.data?.id ?? '';
-  return {
-    success: true,
-    id: newId,
-    message: `crossposted:t3_${bareId} to:r/${targetSubreddit} new_id:${newId}`,
-  };
-}
-
 /** Submit a new link post */
 export async function submitPost(
   subreddit: string,
@@ -231,8 +221,8 @@ export async function submitPost(
   account?: string,
   dataDir?: string
 ): Promise<RedditWriteResult> {
-  await checkWriteLimit('reddit', 'comment', dataDir); // reuse comment limit for posts
-  const token = await getRedditToken(account, dataDir);
+  await checkWriteLimit('reddit', 'comment', dataDir);
+  const { baseUrl, headers } = await getWriteConfig(account, dataDir);
   await writeDelay();
 
   const body = new URLSearchParams({
@@ -245,13 +235,10 @@ export async function submitPost(
   });
 
   const data = await request<{ json: { data: { id: string; name: string } } }>(
-    `${REDDIT_API}/api/submit`,
+    `${baseUrl}/api/submit`,
     {
       method: 'POST',
-      headers: {
-        ...redditHeaders(token),
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
+      headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString() as unknown,
     }
   );
@@ -261,5 +248,45 @@ export async function submitPost(
     success: true,
     id: postId,
     message: `submitted:${postId} to:r/${subreddit}`,
+  };
+}
+
+/** Crosspost to another subreddit */
+export async function crosspost(
+  targetSubreddit: string,
+  postId: string,
+  title: string,
+  account?: string,
+  dataDir?: string
+): Promise<RedditWriteResult> {
+  await checkWriteLimit('reddit', 'comment', dataDir);
+  const { baseUrl, headers } = await getWriteConfig(account, dataDir);
+  await writeDelay();
+
+  const bareId = postId.replace(/^t3_/, '');
+
+  const body = new URLSearchParams({
+    api_type: 'json',
+    kind: 'crosspost',
+    sr: targetSubreddit,
+    title,
+    crosspost_fullname: `t3_${bareId}`,
+    resubmit: 'true',
+  });
+
+  const data = await request<{ json: { data: { id: string; name: string } } }>(
+    `${baseUrl}/api/submit`,
+    {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString() as unknown,
+    }
+  );
+
+  const newId = data?.json?.data?.id ?? '';
+  return {
+    success: true,
+    id: newId,
+    message: `crossposted:t3_${bareId} to:r/${targetSubreddit} new_id:${newId}`,
   };
 }
