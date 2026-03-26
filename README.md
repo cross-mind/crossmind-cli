@@ -10,11 +10,24 @@ npm install -g crossmind
 
 Most social CLIs are built for humans. crossmind is built for AI agents:
 
-- **~85% token reduction** vs raw API JSON responses — same information, far less context
-- **No-auth first** — public platforms work out of the box, no configuration required
 - **Compact output by default** — single-line `key:value` format, no emoji, no decorative whitespace
 - **`--json` for structured pipelines** — clean arrays with no outer wrapper
+- **No-auth first** — public platforms work out of the box, no configuration required
 - **Built-in write safety** — daily limits, random jitter delays, exponential backoff
+
+## Token Benchmark
+
+Measured on `x search "AI agent" 10` against the twitter-cli bridge JSON output (the raw format agents would otherwise consume):
+
+| Format | Bytes | Approx tokens | vs raw |
+|--------|-------|---------------|--------|
+| Raw twitter-cli JSON | 15,568 | ~3,892 | baseline |
+| `crossmind x search` (compact) | 2,663 | ~666 | **−83%** |
+| `crossmind x search --json` | 4,687 | ~1,172 | **−70%** |
+
+Per tweet: raw bridge averages 1,556 bytes (full JSON object with author, metrics, urls, media, timestamps). crossmind compact line averages 266 bytes — ~5.8× smaller.
+
+The bridge JSON is already stripped down from the full v2 REST response (no entities, no referenced_tweets, no full user objects). Against a raw API call with standard field expansions, the reduction is larger.
 
 ## Quick Start
 
