@@ -35,6 +35,13 @@ export const COOKIE_TARGETS: Record<string, CookieTarget> = {
     cookieNames: ['li_at', 'JSESSIONID'],
     successUrlPattern: /linkedin\.com\/feed/,
   },
+  reddit: {
+    platform: 'reddit',
+    loginUrl: 'https://www.reddit.com/login',
+    // reddit_session (older accounts) or token_v2 (newer OAuth-based sessions)
+    cookieNames: ['reddit_session', 'token_v2'],
+    successUrlPattern: /reddit\.com\/(home|user\/|r\/|saved)/,
+  },
 };
 
 /**
@@ -118,6 +125,15 @@ export async function extractAndSaveCookies(
       name: accountName,
       cookie: `li_at=${extracted['li_at']}; JSESSIONID=${extracted['JSESSIONID']}`,
       ct0: extracted['JSESSIONID'], // Used as CSRF token
+    }, dataDir);
+  } else if (platformKey === 'reddit') {
+    // Prefer reddit_session; fall back to token_v2 (newer OAuth-based sessions)
+    const session = extracted['reddit_session'] ?? extracted['token_v2'];
+    if (!session) throw new Error('No Reddit session cookie found after login.');
+    await saveCredential({
+      platform: 'reddit',
+      name: accountName,
+      redditSession: session,
     }, dataDir);
   }
 

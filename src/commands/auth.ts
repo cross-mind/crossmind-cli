@@ -114,11 +114,27 @@ export function registerAuthCommands(program: Command): void {
             break;
           }
 
-          case 'instagram':
-          case 'linkedin': {
-            // These require cookie extraction via browser
-            console.log(`For ${platform}, use: crossmind extract-cookie ${platform}`);
+          case 'instagram': {
+            console.log(`For instagram, use: crossmind extract-cookie instagram`);
             process.exit(1);
+            break;
+          }
+
+          case 'linkedin': {
+            if (opts.accessToken) {
+              // Store OAuth access token for li post / future OAuth operations
+              await saveCredential({
+                platform: 'linkedin',
+                name: accountName,
+                accessToken: opts.accessToken,
+              }, opts.dataDir);
+              console.log(`LinkedIn OAuth token saved as "${accountName}".`);
+            } else {
+              // Cookie extraction for read operations (profile, feed)
+              console.log(`For LinkedIn cookie auth (profile/feed): crossmind extract-cookie linkedin`);
+              console.log(`For LinkedIn posting: crossmind auth login linkedin --access-token <token>`);
+              process.exit(1);
+            }
             break;
           }
 

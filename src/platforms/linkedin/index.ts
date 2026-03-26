@@ -13,6 +13,7 @@ import { loadCredential, resolveAccount } from '../../auth/store.js';
 import { AuthError } from '../../http/client.js';
 
 const LI_API = 'https://www.linkedin.com/voyager/api';
+const LI_OAUTH_API = 'https://api.linkedin.com';
 
 interface LIPost {
   rank: number;
@@ -53,6 +54,71 @@ async function getLiHeaders(account?: string, dataDir?: string): Promise<Record<
     'X-Li-Lang': 'en_US',
     'X-Li-Track': JSON.stringify({ clientVersion: '1.13.10040', mpVersion: '1.13.10040' }),
     'X-RestLi-Protocol-Version': '2.0.0',
+  };
+}
+
+/**
+ * Load a LinkedIn OAuth access token.
+ * Priority: LINKEDIN_ACCESS_TOKEN env var → stored credential accessToken
+ */
+async function loadLinkedInOAuthToken(account?: string, dataDir?: string): Promise<string> {
+  const envToken = process.env['LINKEDIN_ACCESS_TOKEN'];
+  if (envToken) return envToken;
+
+  const name = await resolveAccount('linkedin', account, dataDir);
+  const cred = await loadCredential('linkedin', name, dataDir);
+  if (cred?.accessToken) return cred.accessToken;
+
+  throw new AuthError(
+    'No LinkedIn OAuth token found.\n' +
+    '  Set env: export LINKEDIN_ACCESS_TOKEN=<token>\n' +
+    '  Or save: crossmind auth login linkedin --access-token <token>'
+  );
+}
+
+/**
+ * Post text content to LinkedIn using the UGC Posts API.
+ * Requires an OAuth token with w_member_social scope.
+ */
+async function postToLinkedIn(
+  text: string,
+  account?: string,
+  dataDir?: string
+): Promise<{ id: string; url: string }> {
+  const token = await loadLinkedInOAuthToken(account, dataDir);
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'X-Restli-Protocol-Version': '2.0.0',
+    'LinkedIn-Version': '202401',
+  };
+
+  // Resolve author URN via OIDC userinfo
+  const userInfo = await request<{ sub: string }>(`${LI_OAUTH_API}/v2/userinfo`, { headers });
+  const authorUrn = `urn:li:person:${userInfo.sub}`;
+
+  // Create UGC post — pass body as object; request() handles JSON serialization
+  const resp = await request<{ id: string }>(`${LI_OAUTH_API}/v2/ugcPosts`, {
+    method: 'POST',
+    headers,
+    body: {
+      author: authorUrn,
+      lifecycleState: 'PUBLISHED',
+      specificContent: {
+        'com.linkedin.ugc.ShareContent': {
+          shareCommentary: { text },
+          shareMediaCategory: 'NONE',
+        },
+      },
+      visibility: {
+        'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC',
+      },
+    },
+  });
+
+  const postId = resp?.id ?? '';
+  return {
+    id: postId,
+    url: `https://www.linkedin.com/feed/update/${postId}/`,
   };
 }
 
@@ -125,7 +191,7 @@ const PROFILE_TEMPLATE = '{rank}. {full_name} ({headline}) connections:{connecti
 export function registerLinkedIn(program: Command): void {
   const li = program
     .command('li')
-    .description('LinkedIn — profile, feed (requires cookie auth)');
+    .description('LinkedIn — post, profile, feed');
 
   li
     .command('profile <username>')
@@ -160,6 +226,21 @@ export function registerLinkedIn(program: Command): void {
       try {
         const items = await getFeed(limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], FEED_TEMPLATE, 'li/feed', start, { json: opts.json });
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    });
+
+  li
+    .command('post <text>')
+    .description('Post to LinkedIn (requires OAuth token: LINKEDIN_ACCESS_TOKEN or auth login linkedin --access-token)')
+    .option('--account <name>', 'Account to use')
+    .option('--data-dir <dir>', 'Data directory override')
+    .action(async (text: string, opts: { account?: string; dataDir?: string }) => {
+      try {
+        const result = await postToLinkedIn(text, opts.account, opts.dataDir);
+        console.log(`Posted: ${result.url}`);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);

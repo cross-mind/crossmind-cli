@@ -142,6 +142,11 @@ export REDDIT_CLIENT_ID=your_client_id
 crossmind auth login reddit
 ```
 
+Or extract session cookies directly from browser (no app registration needed):
+```bash
+crossmind extract-cookie reddit           # opens Playwright browser, saves reddit_session
+```
+
 ### Bluesky
 
 App password (Settings → Privacy and Security → App Passwords):
@@ -163,11 +168,26 @@ Google API key (console.cloud.google.com → YouTube Data API v3):
 crossmind auth login yt --token AIzaSy...
 ```
 
-### Instagram / LinkedIn
+### Instagram
 
 Browser cookie extraction (opens Playwright browser):
 ```bash
 crossmind extract-cookie instagram
+```
+
+### LinkedIn
+
+For posting (`li post`), provide an OAuth access token:
+```bash
+# Inject via env var (agent-friendly):
+export LINKEDIN_ACCESS_TOKEN=<token>
+
+# Or save to credential store:
+crossmind auth login linkedin --access-token <token>
+```
+
+For read operations (profile, feed), extract session cookies:
+```bash
 crossmind extract-cookie linkedin
 ```
 
@@ -346,8 +366,9 @@ crossmind ig posts <username> [limit]       # Recent posts
 ### LinkedIn (`li`)
 
 ```bash
-crossmind li profile <username>             # Profile (URL username)
-crossmind li feed [limit]                   # Home feed
+crossmind li post "text content"            # Post (requires LINKEDIN_ACCESS_TOKEN or stored OAuth token)
+crossmind li profile <username>             # Profile (URL username, requires cookie auth)
+crossmind li feed [limit]                   # Home feed (requires cookie auth)
 ```
 
 ## Account Management
