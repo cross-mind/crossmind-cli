@@ -51,8 +51,14 @@ async function loadXCreds(): Promise<XCred | null> {
 }
 
 const creds = await loadXCreds();
-const hasCookie = !!(creds?.authToken && creds?.ct0);
-const hasOAuth  = !!(creds?.accessToken);   // user OAuth token (X_ACCESS_TOKEN / PKCE)
+const hasCookie = !!(
+  (creds?.authToken && creds?.ct0) ||
+  (process.env['TWITTER_AUTH_TOKEN'] && process.env['TWITTER_CT0'])
+);
+const hasOAuth = !!(
+  creds?.accessToken ||
+  process.env['X_ACCESS_TOKEN']   // CrossMind-injected OAuth token
+);
 
 // ── Run helper ────────────────────────────────────────────────────────────
 
