@@ -61,8 +61,9 @@ def _out(ok: bool, data: Any, error_msg: Optional[str] = None) -> None:
 
 # ── Credentials ─────────────────────────────────────────────────────────────
 
-AUTH_TOKEN = os.environ.get("X_AUTH_TOKEN", "")
-CT0 = os.environ.get("X_CT0", "")
+# Accept both X_* (current) and TWITTER_* (legacy vault names).
+AUTH_TOKEN = os.environ.get("X_AUTH_TOKEN") or os.environ.get("TWITTER_AUTH_TOKEN", "")
+CT0 = os.environ.get("X_CT0") or os.environ.get("TWITTER_CT0", "")
 
 BEARER = (
     "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
@@ -183,7 +184,7 @@ def _gql_post(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
     url = f"https://x.com/i/api/graphql/{qid}/{operation}"
     body = {"variables": variables, "queryId": qid}
     resp = _get_session().post(url, headers=_headers(), json=body, timeout=20)
-    if resp.status_code in (400, 403):
+    if resp.status_code in (400, 403, 404):
         _resolve_query_id(operation, refresh=True)
         qid = QUERY_IDS.get(operation, qid)
         url = f"https://x.com/i/api/graphql/{qid}/{operation}"

@@ -78,11 +78,30 @@ async function runFetch<T>(
     X_CT0: creds.ct0,
   };
 
-  const { stdout } = await execFileAsync(python, [SCRIPT_PATH, ...args], {
-    env,
-    timeout: 20_000,
-    maxBuffer: 10 * 1024 * 1024,
-  });
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(python, [SCRIPT_PATH, ...args], {
+      env,
+      timeout: 20_000,
+      maxBuffer: 10 * 1024 * 1024,
+    }));
+  } catch (err: unknown) {
+    // execFileAsync rejects on non-zero exit; the Python script may have written
+    // a JSON error object to stdout before exiting — try to surface it.
+    const execErr = err as { stdout?: string; message?: string };
+    const raw = execErr.stdout ?? '';
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as CliResponse<T>;
+        if (!parsed.ok && parsed.error?.message) {
+          throw new Error(parsed.error.message);
+        }
+      } catch (jsonErr) {
+        if (jsonErr instanceof SyntaxError) { /* ignore, fall through */ } else { throw jsonErr; }
+      }
+    }
+    throw err;
+  }
 
   return JSON.parse(stdout) as T;
 }
