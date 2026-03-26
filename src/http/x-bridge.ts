@@ -183,3 +183,107 @@ export async function bridgeUserProfile(
     url: `https://twitter.com/${u.screenName ?? username}`,
   };
 }
+
+/** Get tweet + reply thread via twitter-cli. */
+export async function bridgeTweet(
+  tweetId: string,
+  limit: number,
+  creds: { authToken: string; ct0: string }
+): Promise<{ tweet: XTweet; thread: XTweet[] }> {
+  // twitter tweet returns either an array (tweet + replies) or object with replies field
+  const result = await runCli<CliResponse<CliTweet | CliTweet[]>>(creds, ['tweet', tweetId]);
+  if (!result.ok) throw new Error((result.error?.message) ?? 'twitter-cli tweet failed');
+
+  let main: CliTweet;
+  let replies: CliTweet[] = [];
+
+  if (Array.isArray(result.data)) {
+    const [first, ...rest] = result.data as CliTweet[];
+    main = first;
+    replies = rest;
+  } else {
+    const obj = result.data as CliTweet & { replies?: CliTweet[] };
+    main = obj;
+    replies = obj.replies ?? [];
+  }
+
+  return {
+    tweet: mapCliTweet(main, 1),
+    thread: replies.slice(0, limit).map((t, i) => mapCliTweet(t, i + 1)),
+  };
+}
+
+function mapCliUser(u: CliUser, rank: number): XUser {
+  return {
+    rank,
+    username: u.screenName ?? '',
+    name: u.name ?? '',
+    followers: u.followers ?? 0,
+    following: u.following ?? 0,
+    tweets: u.tweets ?? 0,
+    bio: (u.bio ?? u.description ?? '').slice(0, 160),
+    verified: String(u.verified ?? false),
+    url: `https://twitter.com/${u.screenName ?? ''}`,
+  };
+}
+
+/** Get user followers via twitter-cli. */
+export async function bridgeFollowers(
+  username: string,
+  limit: number,
+  creds: { authToken: string; ct0: string }
+): Promise<XUser[]> {
+  const result = await runCli<CliResponse<CliUser[]>>(creds, ['followers', username]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli followers failed');
+  return (result.data ?? []).slice(0, limit).map((u, i) => mapCliUser(u, i + 1));
+}
+
+/** Get accounts user follows via twitter-cli. */
+export async function bridgeFollowing(
+  username: string,
+  limit: number,
+  creds: { authToken: string; ct0: string }
+): Promise<XUser[]> {
+  const result = await runCli<CliResponse<CliUser[]>>(creds, ['following', username]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli following failed');
+  return (result.data ?? []).slice(0, limit).map((u, i) => mapCliUser(u, i + 1));
+}
+
+/** Get bookmarks via twitter-cli (cookie required). */
+export async function bridgeBookmarks(
+  limit: number,
+  creds: { authToken: string; ct0: string }
+): Promise<XTweet[]> {
+  const result = await runCli<CliResponse<CliTweet[]>>(creds, ['bookmarks']);
+  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli bookmarks failed');
+  return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
+}
+
+/** Get list tweets via twitter-cli. */
+export async function bridgeListTweets(
+  listId: string,
+  limit: number,
+  creds: { authToken: string; ct0: string }
+): Promise<XTweet[]> {
+  const result = await runCli<CliResponse<CliTweet[]>>(creds, ['list', listId]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli list failed');
+  return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
+}
+
+/** Bookmark a tweet via twitter-cli. */
+export async function bridgeBookmark(
+  tweetId: string,
+  creds: { authToken: string; ct0: string }
+): Promise<void> {
+  const result = await runCli<CliResponse<unknown>>(creds, ['bookmark', tweetId]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli bookmark failed');
+}
+
+/** Remove a bookmark via twitter-cli. */
+export async function bridgeUnbookmark(
+  tweetId: string,
+  creds: { authToken: string; ct0: string }
+): Promise<void> {
+  const result = await runCli<CliResponse<unknown>>(creds, ['unbookmark', tweetId]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'twitter-cli unbookmark failed');
+}

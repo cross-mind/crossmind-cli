@@ -8,6 +8,11 @@ import { xRequest } from '../../http/x-client.js';
 import { loadXCredentials } from '../../auth/x.js';
 import { checkWriteLimit, writeDelay } from '../../http/rate-limiter.js';
 import { AuthError } from '../../http/client.js';
+import {
+  isTwitterCliAvailable,
+  bridgeBookmark,
+  bridgeUnbookmark,
+} from '../../http/x-bridge.js';
 
 async function getXCreds(account?: string, dataDir?: string) {
   const creds = await loadXCredentials(account, dataDir);
@@ -203,4 +208,111 @@ export async function deleteTweet(
   );
 
   return { success: true, message: `deleted:${tweetId}` };
+}
+
+// ── Phase 2 write additions ────────────────────────────────────────────────
+
+/** Quote-tweet */
+export async function quoteTweet(
+  tweetId: string,
+  text: string,
+  account?: string,
+  dataDir?: string
+): Promise<WriteResult> {
+  await checkWriteLimit('x', 'post', dataDir);
+  const creds = await getXCreds(account, dataDir);
+  await writeDelay();
+
+  const data = await xRequest<{ data: { id: string } }>(
+    '/2/tweets',
+    { method: 'POST', creds, body: { text, quote_tweet_id: tweetId } }
+  );
+
+  return {
+    success: true,
+    id: data.data.id,
+    message: `quoted:${tweetId} new_id:${data.data.id}`,
+  };
+}
+
+/** Unlike a tweet */
+export async function unlikeTweet(
+  tweetId: string,
+  account?: string,
+  dataDir?: string
+): Promise<WriteResult> {
+  const creds = await getXCreds(account, dataDir);
+  await writeDelay();
+
+  const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
+  const userId = meData.data.id;
+
+  await xRequest(`/2/users/${userId}/likes/${tweetId}`, { method: 'DELETE', creds });
+  return { success: true, message: `unliked:${tweetId}` };
+}
+
+/** Undo a retweet */
+export async function unretweetTweet(
+  tweetId: string,
+  account?: string,
+  dataDir?: string
+): Promise<WriteResult> {
+  const creds = await getXCreds(account, dataDir);
+  await writeDelay();
+
+  const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
+  const userId = meData.data.id;
+
+  await xRequest(`/2/users/${userId}/retweets/${tweetId}`, { method: 'DELETE', creds });
+  return { success: true, message: `unretweeted:${tweetId}` };
+}
+
+/** Unfollow a user */
+export async function unfollowUser(
+  username: string,
+  account?: string,
+  dataDir?: string
+): Promise<WriteResult> {
+  const creds = await getXCreds(account, dataDir);
+  await writeDelay();
+
+  const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
+  const myId = meData.data.id;
+
+  const targetData = await xRequest<{ data: { id: string } }>(
+    `/2/users/by/username/${username}`,
+    { creds }
+  );
+  const targetId = targetData.data.id;
+
+  await xRequest(`/2/users/${myId}/following/${targetId}`, { method: 'DELETE', creds });
+  return { success: true, message: `unfollowed:@${username}` };
+}
+
+/** Bookmark a tweet (cookie + twitter-cli required) */
+export async function bookmarkTweet(
+  tweetId: string,
+  account?: string,
+  dataDir?: string
+): Promise<WriteResult> {
+  const creds = await getXCreds(account, dataDir);
+  if (!await isTwitterCliAvailable()) {
+    throw new Error('Bookmarks require twitter-cli. Install: uvx install twitter-cli');
+  }
+  await bridgeBookmark(tweetId, creds);
+  return { success: true, message: `bookmarked:${tweetId}` };
+}
+
+/** Remove a bookmark (cookie + twitter-cli required) */
+export async function unbookmarkTweet(
+  tweetId: string,
+  account?: string,
+  dataDir?: string
+): Promise<WriteResult> {
+  const creds = await getXCreds(account, dataDir);
+  if (!await isTwitterCliAvailable()) {
+    throw new Error('Bookmarks require twitter-cli. Install: uvx install twitter-cli');
+  }
+  await bridgeUnbookmark(tweetId, creds);
+  return { success: true, message: `unbookmarked:${tweetId}` };
 }

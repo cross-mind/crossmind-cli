@@ -921,3 +921,189 @@ X API v2 免费层限制严格：
 | YouTube API key 未配置 | 🟢 低 | 功能本身已实现，需用户提供 key |
 | npm 发布 + 单文件二进制 | 🟢 低 | Phase 6 内容，对外发布前处理 |
 | Playwright 无头环境兼容 | 🟢 低 | ig/li cookie 提取在 server 环境需要验证 |
+
+---
+
+## 九、Phase 2 详细开发计划（2026-03-26）
+
+> 基于 twitter-cli v0.8.5 和 rdt-cli v0.4.1 代码审计结果，补全 X 和 Reddit 所有公开能力。
+> 全部实现完毕后仍保持 48+ 测试通过、`pnpm build` 无错误。
+
+---
+
+### 9.1 X (Twitter) Phase 2
+
+#### 新增读命令
+
+| 命令 | 签名 | 实现方式 | 鉴权 |
+|------|------|---------|------|
+| `x tweet` | `x tweet <tweet_id> [limit]` | bridge: `twitter tweet ID -n N --json` | cookie → REST v2 fallback |
+| `x followers` | `x followers <username> [limit]` | bridge: `twitter followers HANDLE -n N --json` | no-auth REST v2 |
+| `x following` | `x following <username> [limit]` | bridge: `twitter following HANDLE -n N --json` | no-auth REST v2 |
+| `x bookmarks` | `x bookmarks [limit]` | bridge: `twitter bookmarks -n N --json` | cookie 必须 |
+| `x list` | `x list <list_id> [limit]` | bridge: `twitter list LIST_ID -n N --json` → REST v2 fallback | OAuth → public bearer |
+| `x likes` | `x likes <username> [limit]` | REST v2 `/2/users/{id}/liked_tweets` | OAuth（他人仅自己可见） |
+
+**Bridge 输出格式**（twitter-cli `--json` 返回）：
+```json
+{ "ok": true, "data": [{ "id": "...", "text": "...", "author": { "screenName": "..." }, "metrics": {...} }] }
+```
+tweet 命令额外包含 `replies` 数组字段，映射为 `thread` 输出。
+
+**REST v2 fallback**（无 cookie 时）：
+- `followers/following`：`/2/users/{id}/followers`、`/2/users/{id}/following` + `user.fields=username,name,public_metrics`
+- `list`：`/2/lists/{id}/tweets` + expansions
+- `likes`：`/2/users/{id}/liked_tweets`
+
+---
+
+#### 新增写命令
+
+| 命令 | 签名 | API | 鉴权 |
+|------|------|-----|------|
+| `x quote` | `x quote <tweet_id> "<text>"` | POST `/2/tweets` with `quote_tweet_id` | OAuth 必须 |
+| `x unlike` | `x unlike <tweet_id>` | DELETE `/2/users/{me}/likes/{id}` | OAuth 必须 |
+| `x unretweet` | `x unretweet <tweet_id>` | DELETE `/2/users/{me}/retweets/{id}` | OAuth 必须 |
+| `x bookmark` | `x bookmark <tweet_id>` | POST GraphQL Bookmark (bridge) | cookie 必须 |
+| `x unbookmark` | `x unbookmark <tweet_id>` | DELETE GraphQL Bookmark (bridge) | cookie 必须 |
+| `x unfollow` | `x unfollow <username>` | DELETE `/2/users/{me}/following/{id}` | OAuth 必须 |
+
+bookmark / unbookmark 通过 twitter-cli bridge：
+```bash
+twitter bookmark TWEET_ID --json
+twitter unbookmark TWEET_ID --json
+```
+
+---
+
+#### DM 读（v2 REST，OAuth dm.read scope）
+
+| 命令 | 签名 | API | 鉴权 |
+|------|------|-----|------|
+| `x dm-list` | `x dm-list [limit]` | GET `/2/dm_events?event_types=MessageCreate` | OAuth + dm.read scope |
+| `x dm-conversation` | `x dm-conversation <participant_username> [limit]` | GET `/2/dm_conversations/with/{participant}/dm_events` | OAuth + dm.read scope |
+
+DM 写操作（`x dm`）已实现，这里补全读端。
+无 dm.read scope 时返回清晰错误：`Requires OAuth dm.read scope. Run: crossmind auth login x`
+
+---
+
+#### 输出结构扩展
+
+新增类型：
+```typescript
+// tweet 命令返回（含 thread）
+export interface XTweetThread {
+  tweet: XTweet;
+  thread: XTweet[];  // 回复链
+}
+
+// followers/following/likes 返回
+export interface XUser { ... }  // 已有，复用
+
+// dm-list / dm-conversation
+export interface XDMEvent {
+  rank: number;
+  id: string;
+  sender: string;
+  recipient: string;
+  text: string;
+  created_at: string;
+}
+```
+
+---
+
+### 9.2 Reddit Phase 2
+
+#### 新增读命令
+
+| 命令 | 签名 | API | 鉴权 |
+|------|------|-----|------|
+| `reddit popular` | `reddit popular [limit] --sort SORT --time TIME` | `/r/popular/{sort}.json` | 公开 |
+| `reddit all` | `reddit all [limit] --sort SORT --time TIME` | `/r/all/{sort}.json` | 公开 |
+| `reddit sub-info` | `reddit sub-info <subreddit>` | `/r/{sub}/about.json` | 公开 |
+| `reddit user` | `reddit user <username>` | `/user/{name}/about.json` | 公开 |
+| `reddit user-posts` | `reddit user-posts <username> [limit] --sort SORT` | `/user/{name}/submitted.json` | 公开 |
+| `reddit user-comments` | `reddit user-comments <username> [limit] --sort SORT` | `/user/{name}/comments.json` | 公开 |
+| `reddit post` | `reddit post <post_id> [limit] --sort SORT` | `/r/{sub}/comments/{id}.json` | 公开 |
+| `reddit home` | `reddit home [limit] --sort SORT` | `/` (JSON feed) | OAuth/cookie 必须 |
+| `reddit saved` | `reddit saved [limit]` | `/user/me/saved.json` | OAuth/cookie 必须 |
+
+`reddit post` 从 URL 或裸 ID 解析 post_id（去掉 `t3_` 前缀），返回帖子 + 顶级评论列表。
+
+---
+
+#### 新增写命令
+
+| 命令 | 签名 | API | 鉴权 |
+|------|------|-----|------|
+| `reddit text-post` | `reddit text-post <subreddit> "<title>" "<text>"` | POST `/api/submit` with `kind=self` | OAuth 必须 |
+| `reddit crosspost` | `reddit crosspost <target_sub> <post_id>` | POST `/api/submit` with `kind=crosspost` | OAuth 必须 |
+
+已有 `reddit post` 命令提交链接帖（`kind=link`），`text-post` 补全文字帖场景。
+
+---
+
+#### 新增输出类型
+
+```typescript
+export interface RedditSubInfo {
+  name: string;
+  title: string;
+  subscribers: number;
+  active_users: number;
+  description: string;
+  url: string;
+  nsfw: boolean;
+}
+
+export interface RedditUserProfile {
+  username: string;
+  karma_post: number;
+  karma_comment: number;
+  created_utc: number;
+  is_mod: boolean;
+  url: string;
+}
+
+// reddit post 命令（帖子+评论）
+export interface RedditPostDetail {
+  post: RedditPost;
+  comments: RedditComment[];
+}
+
+// reddit saved 返回（帖子和评论混合）
+export type RedditSavedItem = RedditPost | RedditComment;
+
+export interface RedditDMEvent { ... }  // 若 Reddit DM API 开放（目前不支持）
+```
+
+---
+
+### 9.3 实施顺序
+
+```
+1. X read.ts：bridgeTweet, bridgeFollowers, bridgeFollowing, bridgeBookmarks
+2. X read.ts：REST fallback for followers/following/list/likes
+3. X write.ts：quote, unlike, unretweet, unfollow
+4. X write.ts（bridge）：bookmark, unbookmark
+5. X commands/x.ts：注册所有新命令 + dm-list/dm-conversation
+6. Reddit read.ts：popular, all, sub-info, user, user-posts, user-comments, post, home, saved
+7. Reddit write.ts：text-post, crosspost
+8. Reddit commands/reddit.ts：注册所有新命令
+9. pnpm build → 全量测试 → commit → push
+```
+
+---
+
+### 9.4 不做的事（明确排除）
+
+| 功能 | 原因 |
+|------|------|
+| X Spaces | API 已限制，非 Premium 账号无法创建/访问 |
+| X Analytics（推文分析） | 需要 Elevated API Access，普通账号不可用 |
+| X Lists 创建/管理 | 低优先级，读命令已足够 |
+| Reddit DM | Reddit 不开放 DM API（`/api/compose` 已废弃） |
+| Reddit Poll/Award | 低频，不影响核心 agent 场景 |
+

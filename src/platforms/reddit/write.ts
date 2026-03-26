@@ -139,6 +139,90 @@ export async function subscribeSubreddit(
   return { success: true, message: `${label}:r/${subreddit}` };
 }
 
+/** Submit a new text (self) post */
+export async function submitTextPost(
+  subreddit: string,
+  title: string,
+  text: string,
+  account?: string,
+  dataDir?: string
+): Promise<RedditWriteResult> {
+  await checkWriteLimit('reddit', 'comment', dataDir);
+  const token = await getRedditToken(account, dataDir);
+  await writeDelay();
+
+  const body = new URLSearchParams({
+    api_type: 'json',
+    kind: 'self',
+    sr: subreddit,
+    title,
+    text,
+  });
+
+  const data = await request<{ json: { data: { id: string; name: string } } }>(
+    `${REDDIT_API}/api/submit`,
+    {
+      method: 'POST',
+      headers: {
+        ...redditHeaders(token),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: body.toString() as unknown,
+    }
+  );
+
+  const postId = data?.json?.data?.id ?? '';
+  return {
+    success: true,
+    id: postId,
+    message: `text_post:${postId} to:r/${subreddit}`,
+  };
+}
+
+/** Crosspost to another subreddit */
+export async function crosspost(
+  targetSubreddit: string,
+  postId: string,
+  title: string,
+  account?: string,
+  dataDir?: string
+): Promise<RedditWriteResult> {
+  await checkWriteLimit('reddit', 'comment', dataDir);
+  const token = await getRedditToken(account, dataDir);
+  await writeDelay();
+
+  // Strip t3_ prefix if present, Reddit needs the bare ID
+  const bareId = postId.replace(/^t3_/, '');
+
+  const body = new URLSearchParams({
+    api_type: 'json',
+    kind: 'crosspost',
+    sr: targetSubreddit,
+    title,
+    crosspost_fullname: `t3_${bareId}`,
+    resubmit: 'true',
+  });
+
+  const data = await request<{ json: { data: { id: string; name: string } } }>(
+    `${REDDIT_API}/api/submit`,
+    {
+      method: 'POST',
+      headers: {
+        ...redditHeaders(token),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: body.toString() as unknown,
+    }
+  );
+
+  const newId = data?.json?.data?.id ?? '';
+  return {
+    success: true,
+    id: newId,
+    message: `crossposted:t3_${bareId} to:r/${targetSubreddit} new_id:${newId}`,
+  };
+}
+
 /** Submit a new link post */
 export async function submitPost(
   subreddit: string,
