@@ -1,10 +1,16 @@
 # crossmind
 
+[![npm version](https://img.shields.io/npm/v/crossmind)](https://www.npmjs.com/package/crossmind)
+[![npm downloads](https://img.shields.io/npm/dm/crossmind)](https://www.npmjs.com/package/crossmind)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Agent-native CLI for 15 social platforms. Token-efficient output, multi-account, built-in safety policies.
 
 ```bash
 npm install -g crossmind
 ```
+
+> **Don't want to manage the CLI yourself?** [crossmind.io](https://crossmind.io) runs the full growth strategy autonomously — no setup, no scripts, just results.
 
 ## Why crossmind
 
@@ -384,6 +390,20 @@ Or set globally:
 ```bash
 export CROSSMIND_DATA_DIR=/path/to/data
 ```
+
+## Migrating from OpenClaw
+
+If you're using OpenClaw and want a lighter path for programmatic social access:
+
+| | crossmind-cli | OpenClaw |
+|---|---|---|
+| Install | `npm install -g crossmind` | Agent config + workflow setup |
+| Output | Token-efficient single-line or `--json` | JSON |
+| Write safety | Built-in daily limits + jitter | Manual configuration |
+| No-auth platforms | Works out of the box (HN, Reddit read, GitHub, arXiv) | Requires connector setup |
+| Managed option | [crossmind.io](https://crossmind.io) — zero config, full strategy | — |
+
+crossmind-cli handles the transport layer. If you want the strategy layer too — deciding what to post, where to engage, how to follow up — [crossmind.io](https://crossmind.io) runs that autonomously on top.
 
 ## Safety Policies
 
