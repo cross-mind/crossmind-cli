@@ -1,13 +1,13 @@
 /**
  * X (Twitter) platform commands.
- * Read: search, mentions, timeline, home, profile, thread, followers, following, bookmarks, list, likes, dm-list, dm-conversation
+ * Read: search, mentions, timeline, home, profile, thread, followers, following, bookmarks, notifications, list, likes, dm-list, dm-conversation
  * Write: tweet, reply, like, unlike, retweet, unretweet, quote, follow, unfollow, bookmark, unbookmark, dm, delete
  */
 
 import { Command } from 'commander';
 import {
   searchTweets, getUserTimeline, getUserProfile, getHomeTimeline,
-  getTweet, getFollowers, getFollowing, getBookmarks, getListTweets, getLikes,
+  getTweet, getFollowers, getFollowing, getBookmarks, getNotifications, getListTweets, getLikes,
   getDMList, getDMConversation,
 } from './read.js';
 import {
@@ -187,6 +187,24 @@ export function registerX(program: Command): void {
       try {
         const items = await getBookmarks(limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, 'x/bookmarks', start, { json: opts.json });
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    });
+
+  x
+    .command('notifications [limit]')
+    .description('Get notification timeline — replies, mentions, likes, retweets (requires cookie auth)')
+    .option('--account <name>', 'Account to use')
+    .option('--data-dir <dir>', 'Data directory override')
+    .option('--json', 'Output as JSON array')
+    .action(async (limitArg: string | undefined, opts: { account?: string; dataDir?: string; json?: boolean }) => {
+      const start = Date.now();
+      const limit = limitArg ? parseInt(limitArg, 10) : 20;
+      try {
+        const items = await getNotifications(limit, opts.account, opts.dataDir);
+        printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, 'x/notifications', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);

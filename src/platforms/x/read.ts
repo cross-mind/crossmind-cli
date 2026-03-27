@@ -23,6 +23,7 @@ import {
   bridgeFollowers,
   bridgeFollowing,
   bridgeBookmarks,
+  bridgeNotifications,
   bridgeListTweets,
 } from '../../http/x-bridge.js';
 import { AuthError } from '../../http/client.js';
@@ -362,6 +363,25 @@ export async function getBookmarks(
     );
   }
   return bridgeBookmarks(limit, creds);
+}
+
+/** Get notification timeline (tweet-containing notifications: replies, mentions, likes, retweets). */
+export async function getNotifications(
+  limit: number,
+  account?: string,
+  dataDir?: string
+): Promise<XTweet[]> {
+  const creds = await loadXCredentials(account, dataDir);
+  if (!hasCookieAuth(creds)) {
+    throw new AuthError('Notifications require cookie auth. Run: crossmind auth login x --auth-token <token> --ct0 <ct0>');
+  }
+  if (!await isCookieClientAvailable()) {
+    throw new Error(
+      'Notifications require Python 3 with curl_cffi.\n' +
+      '  Install: uv pip install curl_cffi'
+    );
+  }
+  return bridgeNotifications(limit, creds);
 }
 
 /** Get tweets from a Twitter List. */

@@ -248,6 +248,14 @@ export async function bridgeBookmarks(
   return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
 }
 
+export async function bridgeNotifications(
+  limit: number, creds: { authToken: string; ct0: string }
+): Promise<XTweet[]> {
+  const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['notifications', '--count', String(limit)]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Notifications failed');
+  return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
+}
+
 export async function bridgeListTweets(
   listId: string, limit: number, creds: { authToken: string; ct0: string }
 ): Promise<XTweet[]> {

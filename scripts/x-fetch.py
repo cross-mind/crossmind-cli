@@ -18,6 +18,7 @@ Usage:
   x-fetch.py followers <username> [--count N]
   x-fetch.py following <username> [--count N]
   x-fetch.py bookmarks [--count N]
+  x-fetch.py notifications [--count N]
   x-fetch.py list <list_id> [--count N]
   x-fetch.py bookmark <tweet_id>
   x-fetch.py unbookmark <tweet_id>
@@ -140,22 +141,37 @@ BEARER = (
 )
 
 # ── Query IDs ────────────────────────────────────────────────────────────────
-# Fetched from X JS bundles; may rotate periodically.
-# Self-heals via twitter-openapi fallback (see _resolve_query_id).
+# Query IDs are resolved dynamically at startup:
+#   1. Disk cache  (~/.cache/x-fetch-query-ids.json, 24h TTL)  — zero latency
+#   2. fa0311/twitter-openapi GitHub                            — ~50 ms
+#   3. X JS bundle scan via twitter_cli._scan_bundles           — ~2-5 s
+# Hardcoded values below are last-resort fallbacks only and may be stale.
 
+_OPENAPI_URL = (
+    "https://raw.githubusercontent.com/fa0311/"
+    "twitter-openapi/refs/heads/main/src/config/placeholder.json"
+)
+_QUERY_ID_CACHE_PATH = os.path.expanduser("~/.cache/x-fetch-query-ids.json")
+_QUERY_ID_TTL = 86400  # 24 hours
+_TWITTER_CLI_VENV = "/root/.local/share/uv/tools/twitter-cli/lib/python3.11/site-packages"
+
+# Hardcoded fallbacks — updated from fa0311 snapshot, used only when all
+# network sources fail. Values may rotate; the dynamic system keeps them fresh.
 QUERY_IDS: Dict[str, str] = {
-    "HomeTimeline":             "HCosKfLNW1AcOo3la3mMgg",
-    "SearchTimeline":           "GcXk9vN_d1jUfHNqLacXQA",
-    "UserTweets":               "E3opETHurmVJflFsUBVuUQ",
-    "UserByScreenName":         "qRednkZG-rn1P6b48NINmQ",
-    "TweetDetail":              "nBS-WpgA6ZG0CyNHD517JQ",
+    "HomeTimeline":             "c-CzHF1LboFilMpsx4ZCrQ",
+    "HomeLatestTimeline":       "BKB7oi212Fi7kQtCBGE4zA",
+    "SearchTimeline":           "VhUd6vHVmLBcw0uX-6jMLA",
+    "UserTweets":               "q6xj5bs0hapm9309hexA_g",
+    "UserByScreenName":         "1VOOyvKkiI3FMmkeDNxM9A",
+    "TweetDetail":              "xd_EMdYvB9hfZsZ6Idri0w",
     "Followers":                "IOh4aS6UdGWGJUYTqliQ7Q",
     "Following":                "zx6e-TLzRkeDO_a7p4b3JQ",
     "Bookmarks":                "uzboyXSHSJrR-mGJqep0TQ",
     "ListLatestTweetsTimeline": "ZBbXrl0FVnTqp7K6EAADog",
     "CreateBookmark":           "aoDbu3RHznuiSkQ9aNM67Q",
     "DeleteBookmark":           "Wlmlj2-xISYCixDmuS8KNg",
-    "CreateTweet":              "tTsjMKyhajZvK4q76mpIbg",
+    "CreateTweet":              "IID9x6WsdMnTlXnzXGq8ng",
+    "NotificationsTimeline":    "GquVPn-SKYxKLgLsRPpJ6g",
 }
 
 FEATURES: Dict[str, bool] = {
@@ -245,24 +261,71 @@ def _headers(path: Optional[str] = None, method: str = "GET") -> Dict[str, str]:
 
 # ── Query ID resolution ──────────────────────────────────────────────────────
 
-_OPENAPI_URL = (
-    "https://raw.githubusercontent.com/fa0311/"
-    "twitter-openapi/refs/heads/main/src/config/placeholder.json"
-)
+def _save_query_id_cache() -> None:
+    try:
+        os.makedirs(os.path.dirname(_QUERY_ID_CACHE_PATH), exist_ok=True)
+        with open(_QUERY_ID_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"ids": dict(QUERY_IDS), "ts": time.time()}, f)
+    except Exception:
+        pass
+
+def _load_query_id_cache() -> bool:
+    """Load persisted query IDs from disk. Returns True if cache is fresh."""
+    try:
+        if os.path.exists(_QUERY_ID_CACHE_PATH):
+            with open(_QUERY_ID_CACHE_PATH, encoding="utf-8") as f:
+                cached = json.load(f)
+            if time.time() - cached.get("ts", 0) < _QUERY_ID_TTL:
+                QUERY_IDS.update(cached.get("ids", {}))
+                return True
+    except Exception:
+        pass
+    return False
+
+def _refresh_from_github() -> bool:
+    """Fetch all query IDs from fa0311/twitter-openapi and persist to disk."""
+    try:
+        resp = _get_session().get(_OPENAPI_URL, headers={"user-agent": "curl/8.0"}, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            updated = False
+            for op, meta in data.items():
+                qid = meta.get("queryId") if isinstance(meta, dict) else None
+                if isinstance(qid, str) and qid:
+                    QUERY_IDS[op] = qid
+                    updated = True
+            if updated:
+                _save_query_id_cache()
+                return True
+    except Exception:
+        pass
+    return False
+
+def _refresh_from_bundles() -> None:
+    """Scan X JS bundles via twitter_cli._scan_bundles (deepest fallback)."""
+    try:
+        if _TWITTER_CLI_VENV not in sys.path:
+            sys.path.insert(0, _TWITTER_CLI_VENV)
+        from twitter_cli.graphql import _scan_bundles, _cached_query_ids  # type: ignore
+        def _fetch(url: str, headers: Optional[Dict[str, str]] = None) -> str:
+            r = _get_session().get(url, headers=headers or {}, timeout=15)
+            return r.text
+        _scan_bundles(_fetch)
+        QUERY_IDS.update(_cached_query_ids)
+        _save_query_id_cache()
+    except Exception:
+        pass
+
+# Startup: tier 1 (disk) → tier 2 (GitHub) → tier 3 (bundle scan)
+if not _load_query_id_cache():
+    if not _refresh_from_github():
+        _refresh_from_bundles()
 
 def _resolve_query_id(operation: str, refresh: bool = False) -> str:
-    """Return queryId, refreshing from community source if refresh=True."""
+    """Return queryId for operation. refresh=True forces a GitHub re-fetch."""
     if refresh:
-        try:
-            resp = _get_session().get(_OPENAPI_URL, headers={"user-agent": "curl/8.0"}, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                qid = data.get(operation, {}).get("queryId")
-                if qid:
-                    QUERY_IDS[operation] = qid
-                    return qid
-        except Exception:
-            pass
+        if not _refresh_from_github():
+            _refresh_from_bundles()
     return QUERY_IDS.get(operation, "")
 
 # ── GraphQL URL builder ──────────────────────────────────────────────────────
@@ -560,6 +623,33 @@ def cmd_bookmarks(count: int = 20) -> None:
     tweets = _tweets_from_instructions(instructions)
     _out(True, tweets)
 
+def cmd_notifications(count: int = 20) -> None:
+    """Fetch notification timeline. Returns tweet-containing notifications."""
+    variables = {
+        "count": count,
+        "includePromotedContent": False,
+    }
+    data = _gql_get("NotificationsTimeline", variables)
+    instructions = _extract_instructions(
+        data, ["data", "notification_timeline", "timeline", "instructions"]
+    )
+    tweets = []
+    for inst in instructions:
+        if inst.get("type") != "TimelineAddEntries":
+            continue
+        for entry in inst.get("entries", []):
+            entry_id = entry.get("entryId", "")
+            if not entry_id.startswith("notif-"):
+                continue
+            content = entry.get("content", {})
+            item_content = content.get("itemContent", {})
+            # Tweet-bearing notifications have tweet_results directly in itemContent
+            result = _dig(item_content, "tweet_results", "result")
+            t = _parse_tweet(result)
+            if t:
+                tweets.append(t)
+    _out(True, tweets[:count])
+
 def cmd_list(list_id: str, count: int = 20) -> None:
     variables = {"listId": list_id, "count": count}
     data = _gql_get("ListLatestTweetsTimeline", variables)
@@ -656,6 +746,8 @@ def main() -> None:
                 cmd_following(rest[0], count)
         elif cmd == "bookmarks":
             cmd_bookmarks(count)
+        elif cmd == "notifications":
+            cmd_notifications(count)
         elif cmd == "list":
             if not rest:
                 _out(False, None, "list requires a list_id argument")
