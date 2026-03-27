@@ -225,7 +225,8 @@ export async function sendDM(
         method: 'POST',
         creds,
         body: {
-          participant_id: targetId,
+          conversation_type: 'OneToOne',
+          participant_ids: [targetId],
           message: { text },
         },
       }
