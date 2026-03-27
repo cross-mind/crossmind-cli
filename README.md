@@ -258,6 +258,7 @@ crossmind ph search <query> [limit]           # Search products
 ```bash
 # Read (cookie auth preferred, falls back to v2 REST)
 crossmind x search <query> [limit]              # Search recent tweets
+crossmind x mentions <username> [limit]         # @mentions and replies to a user
 crossmind x timeline <username> [limit]         # User timeline
 crossmind x home [limit]                        # Home feed (auth required)
 crossmind x profile <username>                  # User profile

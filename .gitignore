@@ -6,3 +6,4 @@ dist/
 ~/.crossmind/
 *.tsbuildinfo
 _stats.yaml
+__pycache__/

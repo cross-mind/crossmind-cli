@@ -207,6 +207,23 @@ def _get_session() -> cffi_requests.Session:
         _session = cffi_requests.Session(impersonate="chrome")
     return _session
 
+def _retry_on_tls(fn: Any, max_retries: int = 2, delay: float = 2.0) -> Any:
+    """Retry fn() on TLS/connection errors (curl_cffi sporadic failures).
+
+    X's GraphQL bridge occasionally throws TLS handshake errors under high
+    request frequency. A short pause + retry resolves them in practice.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            msg = str(exc).lower()
+            is_network_err = any(k in msg for k in ("tls", "ssl", "connection", "openssl"))
+            if is_network_err and attempt < max_retries:
+                time.sleep(delay)
+                continue
+            raise
+
 def _headers(path: Optional[str] = None, method: str = "GET") -> Dict[str, str]:
     h = {
         "authorization": f"Bearer {BEARER}",
@@ -262,13 +279,13 @@ def _gql_url(operation: str, variables: Dict[str, Any], features: Optional[Dict[
 def _gql_get(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
     url = _gql_url(operation, variables)
     path = urllib.parse.urlparse(url).path
-    resp = _get_session().get(url, headers=_headers(path=path, method="GET"), timeout=20)
+    resp = _retry_on_tls(lambda: _get_session().get(url, headers=_headers(path=path, method="GET"), timeout=20))
     if resp.status_code in (400, 403, 404):
         # Query ID may have rotated — refresh once
         _resolve_query_id(operation, refresh=True)
         url = _gql_url(operation, variables)
         path = urllib.parse.urlparse(url).path
-        resp = _get_session().get(url, headers=_headers(path=path, method="GET"), timeout=20)
+        resp = _retry_on_tls(lambda: _get_session().get(url, headers=_headers(path=path, method="GET"), timeout=20))
     resp.raise_for_status()
     return resp.json()
 
@@ -277,14 +294,14 @@ def _gql_post(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
     url = f"https://x.com/i/api/graphql/{qid}/{operation}"
     path = f"/i/api/graphql/{qid}/{operation}"
     body = {"variables": variables, "queryId": qid}
-    resp = _get_session().post(url, headers=_headers(path=path, method="POST"), json=body, timeout=20)
+    resp = _retry_on_tls(lambda: _get_session().post(url, headers=_headers(path=path, method="POST"), json=body, timeout=20))
     if resp.status_code in (400, 403, 404):
         _resolve_query_id(operation, refresh=True)
         qid = QUERY_IDS.get(operation, qid)
         url = f"https://x.com/i/api/graphql/{qid}/{operation}"
         path = f"/i/api/graphql/{qid}/{operation}"
         body["queryId"] = qid
-        resp = _get_session().post(url, headers=_headers(path=path, method="POST"), json=body, timeout=20)
+        resp = _retry_on_tls(lambda: _get_session().post(url, headers=_headers(path=path, method="POST"), json=body, timeout=20))
     resp.raise_for_status()
     return resp.json()
 
@@ -379,8 +396,12 @@ def _tweets_from_instructions(instructions: List[Dict[str, Any]]) -> List[Dict[s
                 t = _parse_tweet(result)
                 if t:
                     tweets.append(t)
-            elif entry_id.startswith("homeConversation-") or entry_id.startswith("profile-conversation-"):
-                # Conversation items contain a list of tweet items
+            elif (entry_id.startswith("homeConversation-")
+                  or entry_id.startswith("profile-conversation-")
+                  or entry_id.startswith("conversationthread-")):
+                # Conversation items contain a list of tweet items.
+                # homeConversation-/profile-conversation- appear in timeline views;
+                # conversationthread- appears in TweetDetail replies.
                 for item in content.get("items", []):
                     inner = _dig(item, "item", "itemContent", "tweet_results", "result")
                     t = _parse_tweet(inner)

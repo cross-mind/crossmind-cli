@@ -1,6 +1,6 @@
 /**
  * X (Twitter) platform commands.
- * Read: search, timeline, home, profile, thread, followers, following, bookmarks, list, likes, dm-list, dm-conversation
+ * Read: search, mentions, timeline, home, profile, thread, followers, following, bookmarks, list, likes, dm-list, dm-conversation
  * Write: tweet, reply, like, unlike, retweet, unretweet, quote, follow, unfollow, bookmark, unbookmark, dm, delete
  */
 
@@ -23,7 +23,7 @@ const DM_TEMPLATE = '{rank}. @{sender}→@{recipient} [{created_at}] — {text}'
 export function registerX(program: Command): void {
   const x = program
     .command('x')
-    .description('X (Twitter) — search, timeline, post, reply, like, follow, dm, bookmarks, lists, DMs');
+    .description('X (Twitter) — search, mentions, timeline, post, reply, like, follow, dm, bookmarks, lists, DMs');
 
   // ── Read commands ──────────────────────────────────────────────
 
@@ -39,6 +39,24 @@ export function registerX(program: Command): void {
       try {
         const items = await searchTweets(query, limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, 'x/search', start, { json: opts.json });
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    });
+
+  x
+    .command('mentions <username> [limit]')
+    .description('Get recent @mentions and replies to a user (last 7 days)')
+    .option('--account <name>', 'Account to use')
+    .option('--data-dir <dir>', 'Data directory override')
+    .option('--json', 'Output as JSON array')
+    .action(async (username: string, limitArg: string | undefined, opts: { account?: string; dataDir?: string; json?: boolean }) => {
+      const start = Date.now();
+      const limit = limitArg ? parseInt(limitArg, 10) : 20;
+      try {
+        const items = await searchTweets(`to:${username}`, limit, opts.account, opts.dataDir);
+        printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, `x/mentions/${username}`, start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
