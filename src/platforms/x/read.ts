@@ -41,6 +41,12 @@ export interface XTweet {
   url: string;
 }
 
+export interface XTweetAnalytics extends XTweet {
+  engagements: number;
+  profile_clicks: number;
+  url_link_clicks: number;
+}
+
 export interface XUser {
   rank: number;
   username: string;
@@ -540,6 +546,91 @@ export async function getDMConversation(
     text: String(e['text'] ?? '').replace(/\n/g, ' ').slice(0, 200),
     created_at: String(e['created_at'] ?? '').slice(0, 10),
   }));
+}
+
+// ── Analytics (requires OAuth for organic_metrics + non_public_metrics) ─────
+
+function mapTweetAnalytics(tweet: Record<string, unknown>, author: Record<string, unknown>, index: number): XTweetAnalytics {
+  const base = mapTweetRest(tweet, author, index);
+  const organic = (tweet['organic_metrics'] as Record<string, number> | null) ?? {};
+  const nonPublic = (tweet['non_public_metrics'] as Record<string, number> | null) ?? {};
+  return {
+    ...base,
+    engagements: nonPublic['engagements'] ?? 0,
+    profile_clicks: organic['user_profile_clicks'] ?? 0,
+    url_link_clicks: organic['url_link_clicks'] ?? 0,
+  };
+}
+
+/**
+ * Get tweets with full analytics (organic_metrics + non_public_metrics).
+ * Requires OAuth — cookie auth does not expose these fields via GraphQL.
+ *
+ * Default: own tweets excluding replies (original content performance).
+ * Use --include-replies to also fetch reply engagement.
+ * Supports pagination up to ~800 recent tweets via next_token.
+ */
+export async function getAnalytics(
+  username: string,
+  limit: number,
+  includeReplies: boolean,
+  account?: string,
+  dataDir?: string
+): Promise<XTweetAnalytics[]> {
+  const creds = await loadXCredentials(account, dataDir);
+  if (!creds?.accessToken) {
+    throw new AuthError(
+      'Analytics requires OAuth access token (organic_metrics + non_public_metrics are OAuth-only).\n' +
+      '  Set X_ACCESS_TOKEN, or run: crossmind auth login x'
+    );
+  }
+
+  // X API requires min 5 when requesting organic_metrics / non_public_metrics
+  const MIN_PAGE_SIZE = 5;
+  const clampedLimit = Math.max(limit, MIN_PAGE_SIZE);
+
+  // Resolve username → user ID
+  const userResp = await xRequest<{ data: { id: string; username: string } }>(
+    `/2/users/by/username/${username}?user.fields=id,username`,
+    { creds }
+  );
+  const userId = userResp.data.id;
+
+  const fields = 'created_at,public_metrics,organic_metrics,non_public_metrics';
+  const results: XTweetAnalytics[] = [];
+  let remaining = Math.min(clampedLimit, 800);
+  let nextToken: string | undefined;
+
+  while (remaining > 0) {
+    const pageSize = Math.min(remaining, 100);
+    const params = new URLSearchParams({
+      max_results: String(pageSize),
+      'tweet.fields': fields,
+    });
+    if (!includeReplies) {
+      params.set('exclude', 'retweets,replies');
+    }
+    if (nextToken) {
+      params.set('pagination_token', nextToken);
+    }
+
+    const data = await xRequest<{
+      data?: Record<string, unknown>[];
+      meta?: { next_token?: string; result_count: number };
+    }>(`/2/users/${userId}/tweets?${params}`, { creds });
+
+    const tweets = data.data ?? [];
+    for (let i = 0; i < tweets.length; i++) {
+      results.push(mapTweetAnalytics(tweets[i], { username }, results.length));
+    }
+    remaining -= tweets.length;
+
+    // Stop if fewer than pageSize results or no next_token
+    if (tweets.length < pageSize || !data.meta?.next_token) break;
+    nextToken = data.meta.next_token;
+  }
+
+  return results.slice(0, limit);
 }
 
 // ── REST helpers for user objects ──────────────────────────────────────────

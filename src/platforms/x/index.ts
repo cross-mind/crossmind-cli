@@ -8,7 +8,7 @@ import { Command } from 'commander';
 import {
   searchTweets, getUserTimeline, getUserProfile, getHomeTimeline,
   getTweet, getFollowers, getFollowing, getBookmarks, getNotifications, getListTweets, getLikes,
-  getDMList, getDMConversation,
+  getDMList, getDMConversation, getAnalytics,
 } from './read.js';
 import {
   postTweet, replyToTweet, likeTweet, retweetTweet, followUser, sendDM, deleteTweet,
@@ -19,6 +19,7 @@ import { printOutput } from '../../output/formatter.js';
 const TWEET_TEMPLATE = '{rank}. @{author} likes:{likes} rt:{retweets} replies:{replies} — {text} {url}';
 const USER_TEMPLATE = '{rank}. @{username} ({name}) followers:{followers} following:{following} tweets:{tweets} — {bio}';
 const DM_TEMPLATE = '{rank}. @{sender}→@{recipient} [{created_at}] — {text}';
+const ANALYTICS_TEMPLATE = '{rank}. {created_at} imp:{views} eng:{engagements} clk:{profile_clicks} lk:{likes} rp:{replies} — {text}';
 
 export function registerX(program: Command): void {
   const x = program
@@ -277,6 +278,29 @@ export function registerX(program: Command): void {
       try {
         const items = await getDMConversation(username, limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], DM_TEMPLATE, `x/dm/${username}`, start, { json: opts.json });
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    });
+
+  // ── Analytics (OAuth only) ─────────────────────────────────────
+
+  x
+    .command('analytics <username> [limit]')
+    .description('Get tweets with full analytics — impressions, engagements, profile clicks (requires OAuth)')
+    .option('--include-replies', 'Include reply engagement (default: own tweets only)')
+    .option('--account <name>', 'Account to use')
+    .option('--data-dir <dir>', 'Data directory override')
+    .option('--json', 'Output as JSON array')
+    .action(async (username: string, limitArg: string | undefined, opts: {
+      includeReplies?: boolean; account?: string; dataDir?: string; json?: boolean;
+    }) => {
+      const start = Date.now();
+      const limit = limitArg ? parseInt(limitArg, 10) : 20;
+      try {
+        const items = await getAnalytics(username, limit, !!opts.includeReplies, opts.account, opts.dataDir);
+        printOutput(items as unknown as Record<string, unknown>[], ANALYTICS_TEMPLATE, `x/analytics/${username}`, start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
