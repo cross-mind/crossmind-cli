@@ -48,6 +48,7 @@ crossmind arxiv search "transformer architecture" --cat cs.AI 10
 export X_ACCESS_TOKEN=<your_oauth_token>
 crossmind x home 10
 crossmind x tweet "Hello from crossmind"
+crossmind x tweet "Screenshot" --media /path/to/image.png
 
 # Or authenticate interactively
 crossmind auth login x
@@ -269,12 +270,15 @@ crossmind x following <username> [limit]        # Accounts user follows
 crossmind x bookmarks [limit]                   # Your bookmarks (cookie)
 crossmind x list <list_id> [limit]              # Tweets from a List
 crossmind x likes <username> [limit]            # User's liked tweets (OAuth)
+crossmind x analytics <username> [limit]         # Tweet impressions, engagements, profile clicks (OAuth)
 crossmind x dm-list [limit]                     # Recent DM events (OAuth)
-crossmind x dm-conversation <username> [limit]  # DM history with user (OAuth)
+crossmind x dm-conversation <username> [limit]  # DM history with user
 
 # Write (OAuth required)
-crossmind x tweet <text>
-crossmind x reply <tweet_id> <text>
+crossmind x tweet <text>                         # Post tweet
+crossmind x tweet <text> --media img.png          # Post with image(s)
+crossmind x reply <tweet_id> <text>                  # Reply to tweet
+crossmind x reply <tweet_id> <text> --media img.png  # Reply with image(s)
 crossmind x like <tweet_id>
 crossmind x unlike <tweet_id>
 crossmind x retweet <tweet_id>
