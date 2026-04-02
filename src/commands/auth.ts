@@ -39,14 +39,14 @@ export function registerAuthCommands(program: Command): void {
     .option('--data-dir <dir>', 'Data directory override')
     .option('--token <token>', 'Provide token/API key directly (github, generic)')
     .option('--cookie <cookie>', 'Provide raw cookie string directly')
-    .option('--auth-token <authToken>', 'X auth_token cookie value')
-    .option('--ct0 <ct0>', 'X ct0 CSRF token')
-    .option('--access-token <accessToken>', 'X OAuth access token (skip browser flow)')
-    .option('--bearer-token <bearerToken>', 'X developer bearer token (read-only, no login required)')
+    .option('--auth-token <authToken>', 'X: auth_token cookie value. Use with --ct0. Enables: home feed, bookmarks, notifications.')
+    .option('--ct0 <ct0>', 'X: CSRF token (required with --auth-token)')
+    .option('--access-token <accessToken>', 'X/LinkedIn: OAuth access token. X enables: tweet, reply, DM, like, follow, analytics, dm-list.')
+    .option('--bearer-token <bearerToken>', 'X: developer bearer token. Read-only, search only. No user context.')
     .option('--handle <handle>', 'Bluesky handle (e.g. user.bsky.social)')
     .option('--app-password <password>', 'Bluesky app password')
-    .option('--session-cookie <session>', 'Reddit reddit_session cookie value')
-    .option('--modhash <modhash>', 'Reddit modhash for write operations (optional)')
+    .option('--session-cookie <session>', 'Reddit: reddit_session cookie. Enables: home, saved.')
+    .option('--modhash <modhash>', 'Reddit: modhash for write operations (optional)')
     .action(async (
       platform: string,
       account: string | undefined,
@@ -164,7 +164,50 @@ export function registerAuthCommands(program: Command): void {
         console.error(`Login failed: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
-    });
+    })
+    .addHelpText('after', `
+
+How to get credentials:
+
+  X (Twitter):
+    Cookie:
+      crossmind extract-cookie x
+      (Headless if session exists, --headed for first-time login)
+
+      Or copy manually from DevTools:
+      Browser → DevTools → Application → Cookies → x.com
+
+    OAuth access token:
+      Browser OAuth flow (requires Developer App):
+        export X_CLIENT_ID=<your_client_id>
+        crossmind auth login x
+
+      Or provide existing token:
+        crossmind auth login x --access-token <token>
+
+  Reddit:
+    Cookie:
+      crossmind extract-cookie reddit
+
+      Or copy manually from DevTools:
+      Browser → DevTools → Application → Cookies → reddit.com
+
+    OAuth access token:
+      Browser OAuth flow (requires Developer App):
+        export REDDIT_CLIENT_ID=<your_client_id>
+        crossmind auth login reddit
+
+Examples:
+  crossmind extract-cookie x
+  crossmind extract-cookie x --headed
+  crossmind auth login x --auth-token <val> --ct0 <val>
+  crossmind auth login x --access-token <val>
+  export X_CLIENT_ID=xxx && crossmind auth login x
+
+  crossmind extract-cookie reddit
+  crossmind auth login reddit --session-cookie <val>
+  export REDDIT_CLIENT_ID=xxx && crossmind auth login reddit
+`);
 
   // auth logout <platform> [account]
   auth

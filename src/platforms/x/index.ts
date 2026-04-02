@@ -26,7 +26,17 @@ const ANALYTICS_TEMPLATE = '{rank}. {created_at} imp:{views} eng:{engagements} c
 export function registerX(program: Command): void {
   const x = program
     .command('x')
-    .description('X (Twitter) — search, mentions, notifications, timeline, post, reply, like, follow, dm, bookmarks, lists, DMs');
+    .description('X (Twitter) — search, mentions, notifications, timeline, post, reply, like, follow, dm, bookmarks, lists, DMs')
+    .addHelpText('after', `
+
+Auth requirements:
+  Cookie (auth_token + ct0):   bookmarks, notifications, bookmark/unbookmark
+  OAuth (access_token):        tweet, reply, DM, like, follow, analytics, dm-list
+  Public bearer:               search only
+
+  Get cookie:  crossmind extract-cookie x
+  Get OAuth:   crossmind auth login x (requires X_CLIENT_ID)
+`);
 
   // ── Read commands ──────────────────────────────────────────────
 

@@ -21,7 +21,17 @@ const USER_TEMPLATE = '{rank}. u/{username} post_karma:{karma_post} comment_karm
 export function registerReddit(program: Command): void {
   const reddit = program
     .command('reddit')
-    .description('Reddit — subreddits, search, comment, vote, subscribe, user profiles, home feed');
+    .description('Reddit — subreddits, search, comment, vote, subscribe, user profiles, home feed')
+    .addHelpText('after', `
+
+Auth requirements:
+  No auth:               r, search, comments, popular, all, user, user-posts, user-comments, read
+  Cookie or OAuth:       home, saved
+  OAuth:                 comment, upvote, downvote, save, subscribe, post, text-post, crosspost, delete
+
+  Get cookie:  crossmind extract-cookie reddit
+  Get OAuth:   crossmind auth login reddit (requires REDDIT_CLIENT_ID)
+`);
 
   // ── Read commands ──────────────────────────────────────────────
 

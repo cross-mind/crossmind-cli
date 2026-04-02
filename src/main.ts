@@ -57,7 +57,8 @@ Examples:
   crossmind auth login reddit
   crossmind extract-cookie instagram
 
-Data directory: ~/.crossmind/ (or set CROSSMIND_DATA_DIR / --data-dir)
+Auth guides:     crossmind <platform> --help
+Data directory:  ~/.crossmind/ (or set CROSSMIND_DATA_DIR / --data-dir)
 `);
 
 // ── Platform commands ──────────────────────────────────────────────────────
