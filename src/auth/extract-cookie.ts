@@ -134,6 +134,24 @@ function resolveProfileDir(platformKey: string, explicit?: string): string {
 }
 
 /**
+ * Check if profile is locked by another browser instance.
+ * Returns true if locked (in use), false if available.
+ */
+function isProfileLocked(profileDir: string): boolean {
+  const lockFile = path.join(profileDir, 'SingletonLock');
+  return fs.existsSync(lockFile);
+}
+
+/**
+ * Check if profile has a Default/Cookies database.
+ * Returns true if cookies file exists.
+ */
+function hasCookiesDatabase(profileDir: string): boolean {
+  const cookiesFile = path.join(profileDir, 'Default', 'Cookies');
+  return fs.existsSync(cookiesFile);
+}
+
+/**
  * Extract and save session cookies for a platform.
  *
  * @param platformKey  - Platform key (x, instagram, linkedin, reddit)
@@ -160,6 +178,23 @@ export async function extractAndSaveCookies(
   }
 
   const profile = resolveProfileDir(platformKey, profileDir);
+
+  // Pre-flight checks
+  if (isProfileLocked(profile)) {
+    throw new Error(
+      `Profile is locked by another browser instance.\n` +
+      `  Profile: ${profile}\n` +
+      `  Close the browser using this profile and try again.`
+    );
+  }
+
+  if (!hasCookiesDatabase(profile)) {
+    throw new Error(
+      `No cookies database found in profile.\n` +
+      `  Profile: ${profile}\n` +
+      `  Please log in to ${platformKey} first using a browser with this profile.`
+    );
+  }
 
   if (headed) {
     await extractHeaded(target, accountName, dataDir, profile);
@@ -228,7 +263,6 @@ async function extractHeaded(
   profile: string,
 ): Promise<void> {
   console.log(`Launching browser for ${target.platform} login...`);
-  console.log(`Please log in when the browser opens. The session will be saved automatically.`);
   console.log(`Profile directory: ${profile}`);
 
   const executablePath = findChrome();
@@ -240,28 +274,44 @@ async function extractHeaded(
 
   const page = await context.newPage();
   await page.goto(target.loginUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+  await page.waitForTimeout(3000);
 
-  // Wait for successful login
-  await new Promise<void>((resolve, reject) => {
-    const interval = setInterval(async () => {
-      try {
-        const url = page.url();
-        if (target.successUrlPattern && target.successUrlPattern.test(url)) {
+  // Check if already logged in by checking for session cookies
+  const existingCookies = await context.cookies();
+  const hasSession = target.cookieNames.some(name =>
+    existingCookies.some(c => c.name === name && c.value)
+  );
+
+  if (hasSession) {
+    console.log(`Already logged in to ${target.platform}. Extracting session...`);
+  } else {
+    console.log(`Please log in when the browser opens. The session will be saved automatically.`);
+
+    // Wait for successful login (check for session cookies)
+    await new Promise<void>((resolve, reject) => {
+      const interval = setInterval(async () => {
+        try {
+          const cookies = await context.cookies();
+          const hasCookie = target.cookieNames.some(name =>
+            cookies.some(c => c.name === name && c.value)
+          );
+          if (hasCookie) {
+            clearInterval(interval);
+            resolve();
+          }
+        } catch {
           clearInterval(interval);
-          resolve();
+          reject(new Error('Browser closed unexpectedly'));
         }
-      } catch {
-        clearInterval(interval);
-        reject(new Error('Browser closed unexpectedly'));
-      }
-    }, 2000);
+      }, 2000);
 
-    // Resolve after 5 minutes regardless
-    setTimeout(() => {
-      clearInterval(interval);
-      resolve();
-    }, 300_000);
-  });
+      // Resolve after 5 minutes regardless
+      setTimeout(() => {
+        clearInterval(interval);
+        resolve();
+      }, 300_000);
+    });
+  }
 
   const cookies = await context.cookies();
   await savePlatformCookies(target, accountName, dataDir, cookies, page);
