@@ -31,7 +31,7 @@ const REDDIT_OAUTH_CONFIG: OAuthConfig = {
 /** Unified credential type — tells callers which auth strategy is available. */
 export type RedditCredentials =
   | { type: 'oauth'; token: string }
-  | { type: 'cookie'; session: string; modhash?: string }
+  | { type: 'cookie'; session: string; modhash?: string; csrfToken?: string; loid?: string }
   | null;
 
 /**
@@ -106,7 +106,13 @@ export async function loadRedditCredentials(
 
   // Cookie auth wins if present
   if (cred.redditSession) {
-    return { type: 'cookie', session: cred.redditSession, modhash: cred.redditModhash };
+    return {
+      type: 'cookie',
+      session: cred.redditSession,
+      modhash: cred.redditModhash,
+      csrfToken: cred.redditCsrftoken,
+      loid: cred.redditLoid,
+    };
   }
 
   // OAuth access token
@@ -168,9 +174,18 @@ export function redditHeaders(token: string): Record<string, string> {
 }
 
 /** Build headers for Reddit cookie-based API calls */
-export function redditCookieHeaders(session: string, modhash?: string): Record<string, string> {
+export function redditCookieHeaders(
+  session: string,
+  modhash?: string,
+  csrfToken?: string,
+  loid?: string
+): Record<string, string> {
+  const cookieParts = [`reddit_session=${encodeURIComponent(session)}`];
+  if (csrfToken) cookieParts.push(`csrf_token=${csrfToken}`);
+  if (loid) cookieParts.push(`loid=${loid}`);
+
   const headers: Record<string, string> = {
-    'Cookie': `reddit_session=${encodeURIComponent(session)}`,
+    'Cookie': cookieParts.join('; '),
     'User-Agent': REDDIT_UA,
     'Accept': 'application/json',
     'sec-ch-ua': '"Chromium";v="133", "Not(A:Brand";v="99", "Google Chrome";v="133"',

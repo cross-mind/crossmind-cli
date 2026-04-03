@@ -47,14 +47,14 @@ async function getWriteConfig(account?: string, dataDir?: string): Promise<Write
       // Fetch modhash from me.json — required for most write endpoints
       const meData = await request<{ data: { modhash: string } }>(
         'https://www.reddit.com/api/me.json',
-        { headers: redditCookieHeaders(creds.session) }
+        { headers: redditCookieHeaders(creds.session, undefined, creds.csrfToken, creds.loid) }
       );
       modhash = meData?.data?.modhash;
     }
 
     return {
       baseUrl: 'https://www.reddit.com',
-      headers: redditCookieHeaders(creds.session, modhash),
+      headers: redditCookieHeaders(creds.session, modhash, creds.csrfToken, creds.loid),
     };
   }
 

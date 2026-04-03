@@ -63,7 +63,7 @@ async function resolveAuth(account?: string, dataDir?: string): Promise<{
   if (creds?.type === 'cookie') {
     return {
       baseUrl: 'https://www.reddit.com',
-      headers: redditCookieHeaders(creds.session, creds.modhash),
+      headers: redditCookieHeaders(creds.session, creds.modhash, creds.csrfToken, creds.loid),
     };
   }
   if (creds?.type === 'oauth') {

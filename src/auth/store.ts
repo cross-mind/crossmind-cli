@@ -24,7 +24,9 @@ export interface Credential {
   did?: string;            // Bluesky DID
   handle?: string;         // handle / username
   redditSession?: string;  // reddit_session cookie (cookie-based auth)
-  redditModhash?: string;  // modhash for Reddit write ops (optional)
+  redditModhash?: string;  // modhash for Reddit write ops
+  redditCsrftoken?: string; // csrf_token cookie for Reddit
+  redditLoid?: string;     // loid cookie for Reddit
 }
 
 interface Config {

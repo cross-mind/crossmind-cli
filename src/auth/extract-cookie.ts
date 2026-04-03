@@ -90,7 +90,7 @@ export const COOKIE_TARGETS: Record<string, CookieTarget> = {
   reddit: {
     platform: 'reddit',
     loginUrl: 'https://www.reddit.com/login',
-    cookieNames: ['reddit_session', 'token_v2'],
+    cookieNames: ['reddit_session', 'csrf_token', 'loid'],
     successUrlPattern: /reddit\.com\/(home|user\/|r\/|saved)/,
     loginUrlPattern: /reddit\.com\/login/,
   },
@@ -176,6 +176,11 @@ async function extractHeadless(
   dataDir: string | undefined,
   profile: string,
 ): Promise<void> {
+  // Reddit requires headed mode (headless is blocked by bot detection)
+  if (target.platform === 'reddit') {
+    throw new ExtractCookieLoginRequired(target.platform);
+  }
+
   const executablePath = findChrome();
   const context = await chromium.launchPersistentContext(profile, {
     headless: true,
@@ -208,7 +213,7 @@ async function extractHeadless(
     }
 
     const cookies = await context.cookies();
-    await savePlatformCookies(target, accountName, dataDir, cookies);
+    await savePlatformCookies(target, accountName, dataDir, cookies, page);
   } finally {
     await context.close();
   }
@@ -259,7 +264,7 @@ async function extractHeaded(
   });
 
   const cookies = await context.cookies();
-  await savePlatformCookies(target, accountName, dataDir, cookies);
+  await savePlatformCookies(target, accountName, dataDir, cookies, page);
   await context.close();
 }
 
@@ -270,6 +275,7 @@ async function savePlatformCookies(
   accountName: string,
   dataDir: string | undefined,
   cookies: Array<{ name: string; value: string }>,
+  page?: import('playwright').Page,
 ): Promise<void> {
   const extracted: Record<string, string> = {};
   for (const name of target.cookieNames) {
@@ -306,12 +312,32 @@ async function savePlatformCookies(
       ct0: extracted['JSESSIONID'],
     }, dataDir);
   } else if (platformKey === 'reddit') {
-    const session = extracted['reddit_session'] ?? extracted['token_v2'];
+    const session = extracted['reddit_session'];
     if (!session) throw new Error('No Reddit session cookie found after login.');
+
+    // Get modhash via API (requires headed browser for Reddit)
+    let modhash: string | undefined;
+    if (page) {
+      try {
+        const meData = await page.evaluate(async () => {
+          const resp = await fetch('https://www.reddit.com/api/me.json', {credentials: 'include'});
+          const data = await resp.json() as { data?: { name?: string; modhash?: string } };
+          return { name: data?.data?.name, modhash: data?.data?.modhash };
+        });
+        modhash = meData.modhash;
+        if (meData.name) console.log(`Reddit user: ${meData.name}`);
+      } catch (e) {
+        console.warn('Failed to fetch modhash (write operations may fail):', e);
+      }
+    }
+
     await saveCredential({
       platform: 'reddit',
       name: accountName,
       redditSession: session,
+      redditModhash: modhash,
+      redditCsrftoken: extracted['csrf_token'],
+      redditLoid: extracted['loid'],
     }, dataDir);
   }
 
