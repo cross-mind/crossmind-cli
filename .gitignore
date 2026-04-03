@@ -1,9 +1,38 @@
 node_modules/
 dist/
-*.js.map
+
+# TypeScript
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# npm / pnpm
+*.tgz
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
 .env
 .env.*
-~/.crossmind/
-*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Test coverage
+coverage/
+
+# Local config (if ever present in project root)
+.crossmind/
+
+# Internal stats
 _stats.yaml
-__pycache__/
