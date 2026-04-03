@@ -172,6 +172,12 @@ QUERY_IDS: Dict[str, str] = {
     "DeleteBookmark":           "Wlmlj2-xISYCixDmuS8KNg",
     "CreateTweet":              "IID9x6WsdMnTlXnzXGq8ng",
     "NotificationsTimeline":    "GquVPn-SKYxKLgLsRPpJ6g",
+    # Write mutations (query IDs rotate; dynamic resolution keeps them fresh)
+    "DeleteTweet":              "VaenaVgh5q5ih7kvyVjgtg",
+    "FavoriteTweet":            "lI07N6Otwv1PhnEgXILM7A",
+    "UnfavoriteTweet":          "ZYKSe-w7KEslx3JhSIk5LA",
+    "CreateRetweet":            "ojPdsZsimiJrUGLR1sjUtA",
+    "DeleteRetweet":            "iQtK4dl5hBmXewYZuEOKVw",
 }
 
 FEATURES: Dict[str, bool] = {
@@ -695,6 +701,77 @@ def cmd_reply(tweet_id: str, text: str) -> None:
     new_id = _dig(result, "data", "create_tweet", "tweet_results", "result", "rest_id", default="")
     _out(True, {"id": new_id})
 
+def cmd_post(text: str) -> None:
+    """Post a new tweet (no reply context)."""
+    variables = {
+        "tweet_text": text,
+        "dark_request": False,
+        "media": {"media_entities": [], "possibly_sensitive": False},
+        "semantic_annotation_ids": [],
+    }
+    result = _gql_post("CreateTweet", variables)
+    new_id = _dig(result, "data", "create_tweet", "tweet_results", "result", "rest_id", default="")
+    _out(True, {"id": new_id})
+
+def cmd_quote(tweet_id: str, text: str) -> None:
+    """Quote-tweet: CreateTweet with attachment_url."""
+    variables = {
+        "tweet_text": text,
+        "attachment_url": f"https://twitter.com/i/web/status/{tweet_id}",
+        "dark_request": False,
+        "media": {"media_entities": [], "possibly_sensitive": False},
+        "semantic_annotation_ids": [],
+    }
+    result = _gql_post("CreateTweet", variables)
+    new_id = _dig(result, "data", "create_tweet", "tweet_results", "result", "rest_id", default="")
+    _out(True, {"id": new_id})
+
+def cmd_like(tweet_id: str) -> None:
+    variables = {"tweet_id": tweet_id, "action_source": "tweet_detail"}
+    _gql_post("FavoriteTweet", variables)
+    _out(True, {"liked": True})
+
+def cmd_unlike(tweet_id: str) -> None:
+    variables = {"tweet_id": tweet_id}
+    _gql_post("UnfavoriteTweet", variables)
+    _out(True, {"liked": False})
+
+def cmd_retweet(tweet_id: str) -> None:
+    variables = {"tweet_id": tweet_id, "dark_request": False}
+    result = _gql_post("CreateRetweet", variables)
+    new_id = _dig(result, "data", "create_retweet", "retweet_results", "result", "rest_id", default="")
+    _out(True, {"id": new_id})
+
+def cmd_unretweet(tweet_id: str) -> None:
+    variables = {"source_tweet_id": tweet_id, "dark_request": False}
+    _gql_post("DeleteRetweet", variables)
+    _out(True, {"retweeted": False})
+
+def _v1_post(path: str, form_data: str) -> None:
+    """POST to x.com/i/1.1/* with cookie auth (form-urlencoded)."""
+    url = f"https://x.com/i/1.1/{path}"
+    headers = {**_headers(), "content-type": "application/x-www-form-urlencoded"}
+    resp = _retry_on_tls(
+        lambda: _get_session().post(url, headers=headers, data=form_data, timeout=20)
+    )
+    resp.raise_for_status()
+
+def cmd_follow(username: str) -> None:
+    """Follow a user via v1.1 friendships/create (cookie auth)."""
+    _v1_post(
+        "friendships/create.json",
+        f"screen_name={urllib.parse.quote(username)}&include_entities=true"
+    )
+    _out(True, {"following": True})
+
+def cmd_unfollow(username: str) -> None:
+    """Unfollow a user via v1.1 friendships/destroy (cookie auth)."""
+    _v1_post(
+        "friendships/destroy.json",
+        f"screen_name={urllib.parse.quote(username)}&include_entities=true"
+    )
+    _out(True, {"following": False})
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -784,6 +861,46 @@ def main() -> None:
                 _out(False, None, "reply requires tweet_id and text arguments")
             else:
                 cmd_reply(rest[0], rest[1])
+        elif cmd == "post":
+            if not rest:
+                _out(False, None, "post requires a text argument")
+            else:
+                cmd_post(rest[0])
+        elif cmd == "quote":
+            if len(rest) < 2:
+                _out(False, None, "quote requires tweet_id and text arguments")
+            else:
+                cmd_quote(rest[0], rest[1])
+        elif cmd == "like":
+            if not rest:
+                _out(False, None, "like requires a tweet_id argument")
+            else:
+                cmd_like(rest[0])
+        elif cmd == "unlike":
+            if not rest:
+                _out(False, None, "unlike requires a tweet_id argument")
+            else:
+                cmd_unlike(rest[0])
+        elif cmd == "retweet":
+            if not rest:
+                _out(False, None, "retweet requires a tweet_id argument")
+            else:
+                cmd_retweet(rest[0])
+        elif cmd == "unretweet":
+            if not rest:
+                _out(False, None, "unretweet requires a tweet_id argument")
+            else:
+                cmd_unretweet(rest[0])
+        elif cmd == "follow":
+            if not rest:
+                _out(False, None, "follow requires a username argument")
+            else:
+                cmd_follow(rest[0])
+        elif cmd == "unfollow":
+            if not rest:
+                _out(False, None, "unfollow requires a username argument")
+            else:
+                cmd_unfollow(rest[0])
         else:
             _out(False, None, f"Unknown command: {cmd}")
             sys.exit(1)

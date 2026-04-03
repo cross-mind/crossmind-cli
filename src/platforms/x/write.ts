@@ -3,9 +3,10 @@
  * Post, reply, like, retweet, follow, dm, delete.
  *
  * Auth strategy:
- *   - OAuth access token (X_ACCESS_TOKEN or stored accessToken) → v2 REST write ops
- *   - Cookie auth (authToken + ct0)  → bridge-based ops (reply, delete, bookmark, unbookmark)
- *   Either credential type satisfies getXCreds; specific ops check what they need.
+ *   - Cookie auth (authToken + ct0) is PREFERRED for all ops except DM and media upload.
+ *     Routes through x-fetch.py (curl_cffi Chrome impersonation) — no API tier limits.
+ *   - OAuth access token (X_ACCESS_TOKEN or stored accessToken) → v2 REST fallback.
+ *   Either credential type satisfies getXCreds; DM and media upload require OAuth.
  */
 
 import { xRequest } from '../../http/x-client.js';
@@ -19,6 +20,14 @@ import {
   bridgeDelete,
   bridgeBookmark,
   bridgeUnbookmark,
+  bridgePost,
+  bridgeQuote,
+  bridgeLike,
+  bridgeUnlike,
+  bridgeRetweet,
+  bridgeUnretweet,
+  bridgeFollow,
+  bridgeUnfollow,
 } from '../../http/x-bridge.js';
 import fs from 'node:fs';
 
@@ -105,6 +114,17 @@ export async function postTweet(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
+  // Prefer cookie auth (GraphQL, no API tier restrictions) when available
+  if (!mediaIds?.length && creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
+    const result = await bridgePost(text, creds as { authToken: string; ct0: string });
+    await recordWrite('x', 'tweet', text, undefined, dataDir);
+    return {
+      success: true,
+      id: result.id,
+      message: `posted:${result.id} text:${text.slice(0, 50)}${text.length > 50 ? '...' : ''}`,
+    };
+  }
+
   const body: Record<string, unknown> = { text };
   if (mediaIds?.length) {
     body.media = { media_ids: mediaIds };
@@ -140,47 +160,31 @@ export async function replyToTweet(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
-  try {
-    const body: Record<string, unknown> = { text, reply: { in_reply_to_tweet_id: tweetId } };
-    if (mediaIds?.length) {
-      body.media = { media_ids: mediaIds };
-    }
-    const data = await xRequest<{ data: { id: string } }>(
-      '/2/tweets',
-      { method: 'POST', creds, body }
-    );
+  // Prefer cookie auth (GraphQL, no tier restrictions)
+  if (!mediaIds?.length && creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
+    const result = await bridgeReply(tweetId, text, creds as { authToken: string; ct0: string });
     await recordWrite('x', 'reply', text, tweetId, dataDir);
     return {
       success: true,
-      id: data.data.id,
-      message: `replied:${data.data.id} to:${tweetId}${mediaIds?.length ? ` media:${mediaIds.length}` : ''}`,
+      id: result.id,
+      message: `replied:${result.id} to:${tweetId}`,
     };
-  } catch (err) {
-    // Free tier API often returns 403 for cold replies (no prior engagement).
-    // Fallback to cookie auth via GraphQL, which has no such restriction.
-    if (err instanceof AuthError && /HTTP 403/.test(err.message)) {
-      if (!creds.authToken || !creds.ct0) {
-        throw new AuthError(
-          `X Free tier API blocked this reply (${err.message.split(' — ')[1] ?? 'policy restriction'}).\n` +
-          '  Add cookie auth for unrestricted replies: crossmind auth extract-cookie x'
-        );
-      }
-      if (!await isCookieClientAvailable()) {
-        throw new Error(
-          'X Free tier API blocked this reply. Cookie fallback needs Python 3 + curl_cffi.\n' +
-          '  Install: uv pip install curl_cffi'
-        );
-      }
-      const result = await bridgeReply(tweetId, text, creds as { authToken: string; ct0: string });
-      await recordWrite('x', 'reply', text, tweetId, dataDir);
-      return {
-        success: true,
-        id: result.id,
-        message: `replied:${result.id} to:${tweetId} (cookie)`,
-      };
-    }
-    throw err;
   }
+
+  const body: Record<string, unknown> = { text, reply: { in_reply_to_tweet_id: tweetId } };
+  if (mediaIds?.length) {
+    body.media = { media_ids: mediaIds };
+  }
+  const data = await xRequest<{ data: { id: string } }>(
+    '/2/tweets',
+    { method: 'POST', creds, body }
+  );
+  await recordWrite('x', 'reply', text, tweetId, dataDir);
+  return {
+    success: true,
+    id: data.data.id,
+    message: `replied:${data.data.id} to:${tweetId}${mediaIds?.length ? ` media:${mediaIds.length}` : ''}`,
+  };
 }
 
 /** Like a tweet */
@@ -193,18 +197,15 @@ export async function likeTweet(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
-  // Need authenticated user's ID first
-  const meData = await xRequest<{ data: { id: string } }>(
-    '/2/users/me',
-    { creds }
-  );
+  // Prefer cookie auth (GraphQL)
+  if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
+    await bridgeLike(tweetId, creds as { authToken: string; ct0: string });
+    return { success: true, message: `liked:${tweetId}` };
+  }
+
+  const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
   const userId = meData.data.id;
-
-  await xRequest(
-    `/2/users/${userId}/likes`,
-    { method: 'POST', creds, body: { tweet_id: tweetId } }
-  );
-
+  await xRequest(`/2/users/${userId}/likes`, { method: 'POST', creds, body: { tweet_id: tweetId } });
   return { success: true, message: `liked:${tweetId}` };
 }
 
@@ -218,17 +219,15 @@ export async function retweetTweet(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
-  const meData = await xRequest<{ data: { id: string } }>(
-    '/2/users/me',
-    { creds }
-  );
+  // Prefer cookie auth (GraphQL)
+  if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
+    const result = await bridgeRetweet(tweetId, creds as { authToken: string; ct0: string });
+    return { success: true, id: result.id, message: `retweeted:${tweetId}` };
+  }
+
+  const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
   const userId = meData.data.id;
-
-  await xRequest(
-    `/2/users/${userId}/retweets`,
-    { method: 'POST', creds, body: { tweet_id: tweetId } }
-  );
-
+  await xRequest(`/2/users/${userId}/retweets`, { method: 'POST', creds, body: { tweet_id: tweetId } });
   return { success: true, message: `retweeted:${tweetId}` };
 }
 
@@ -242,23 +241,22 @@ export async function followUser(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
-  const meData = await xRequest<{ data: { id: string } }>(
-    '/2/users/me',
-    { creds }
-  );
+  // Try cookie auth first (v1.1 REST). Requires full browser cookie string;
+  // with only auth_token + ct0 this returns 401 — fall through to OAuth.
+  if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
+    try {
+      await bridgeFollow(username, creds as { authToken: string; ct0: string });
+      return { success: true, message: `following:@${username}` };
+    } catch {
+      // Cookie-only insufficient for v1.1; fall through to OAuth v2
+    }
+  }
+
+  const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
   const myId = meData.data.id;
-
-  const targetData = await xRequest<{ data: { id: string } }>(
-    `/2/users/by/username/${username}`,
-    { creds }
-  );
+  const targetData = await xRequest<{ data: { id: string } }>(`/2/users/by/username/${username}`, { creds });
   const targetId = targetData.data.id;
-
-  await xRequest(
-    `/2/users/${myId}/following`,
-    { method: 'POST', creds, body: { target_user_id: targetId } }
-  );
-
+  await xRequest(`/2/users/${myId}/following`, { method: 'POST', creds, body: { target_user_id: targetId } });
   return { success: true, message: `following:@${username}` };
 }
 
@@ -365,6 +363,13 @@ export async function quoteTweet(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
+  // Prefer cookie auth (GraphQL)
+  if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
+    const result = await bridgeQuote(tweetId, text, creds as { authToken: string; ct0: string });
+    await recordWrite('x', 'quote', text, tweetId, dataDir);
+    return { success: true, id: result.id, message: `quoted:${tweetId} new_id:${result.id}` };
+  }
+
   const data = await xRequest<{ data: { id: string } }>(
     '/2/tweets',
     { method: 'POST', creds, body: { text, quote_tweet_id: tweetId } }
@@ -387,9 +392,14 @@ export async function unlikeTweet(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
+  // Prefer cookie auth (GraphQL)
+  if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
+    await bridgeUnlike(tweetId, creds as { authToken: string; ct0: string });
+    return { success: true, message: `unliked:${tweetId}` };
+  }
+
   const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
   const userId = meData.data.id;
-
   await xRequest(`/2/users/${userId}/likes/${tweetId}`, { method: 'DELETE', creds });
   return { success: true, message: `unliked:${tweetId}` };
 }
@@ -403,9 +413,14 @@ export async function unretweetTweet(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
+  // Prefer cookie auth (GraphQL)
+  if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
+    await bridgeUnretweet(tweetId, creds as { authToken: string; ct0: string });
+    return { success: true, message: `unretweeted:${tweetId}` };
+  }
+
   const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
   const userId = meData.data.id;
-
   await xRequest(`/2/users/${userId}/retweets/${tweetId}`, { method: 'DELETE', creds });
   return { success: true, message: `unretweeted:${tweetId}` };
 }
@@ -419,15 +434,20 @@ export async function unfollowUser(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
+  // Try cookie auth first (v1.1 REST); fall through to OAuth if insufficient.
+  if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
+    try {
+      await bridgeUnfollow(username, creds as { authToken: string; ct0: string });
+      return { success: true, message: `unfollowed:@${username}` };
+    } catch {
+      // Cookie-only insufficient for v1.1; fall through to OAuth v2
+    }
+  }
+
   const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
   const myId = meData.data.id;
-
-  const targetData = await xRequest<{ data: { id: string } }>(
-    `/2/users/by/username/${username}`,
-    { creds }
-  );
+  const targetData = await xRequest<{ data: { id: string } }>(`/2/users/by/username/${username}`, { creds });
   const targetId = targetData.data.id;
-
   await xRequest(`/2/users/${myId}/following/${targetId}`, { method: 'DELETE', creds });
   return { success: true, message: `unfollowed:@${username}` };
 }

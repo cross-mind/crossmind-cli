@@ -292,3 +292,62 @@ export async function bridgeUnbookmark(
   const result = await runFetch<CliResponse<unknown>>(creds, ['unbookmark', tweetId]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Unbookmark failed');
 }
+
+export async function bridgePost(
+  text: string, creds: { authToken: string; ct0: string }
+): Promise<{ id: string }> {
+  const result = await runFetch<CliResponse<{ id: string }>>(creds, ['post', text]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Post failed');
+  return result.data;
+}
+
+export async function bridgeQuote(
+  tweetId: string, text: string, creds: { authToken: string; ct0: string }
+): Promise<{ id: string }> {
+  const result = await runFetch<CliResponse<{ id: string }>>(creds, ['quote', tweetId, text]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Quote failed');
+  return result.data;
+}
+
+export async function bridgeLike(
+  tweetId: string, creds: { authToken: string; ct0: string }
+): Promise<void> {
+  const result = await runFetch<CliResponse<unknown>>(creds, ['like', tweetId]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Like failed');
+}
+
+export async function bridgeUnlike(
+  tweetId: string, creds: { authToken: string; ct0: string }
+): Promise<void> {
+  const result = await runFetch<CliResponse<unknown>>(creds, ['unlike', tweetId]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Unlike failed');
+}
+
+export async function bridgeRetweet(
+  tweetId: string, creds: { authToken: string; ct0: string }
+): Promise<{ id: string }> {
+  const result = await runFetch<CliResponse<{ id: string }>>(creds, ['retweet', tweetId]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Retweet failed');
+  return result.data;
+}
+
+export async function bridgeUnretweet(
+  tweetId: string, creds: { authToken: string; ct0: string }
+): Promise<void> {
+  const result = await runFetch<CliResponse<unknown>>(creds, ['unretweet', tweetId]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Unretweet failed');
+}
+
+export async function bridgeFollow(
+  username: string, creds: { authToken: string; ct0: string }
+): Promise<void> {
+  const result = await runFetch<CliResponse<unknown>>(creds, ['follow', username]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Follow failed');
+}
+
+export async function bridgeUnfollow(
+  username: string, creds: { authToken: string; ct0: string }
+): Promise<void> {
+  const result = await runFetch<CliResponse<unknown>>(creds, ['unfollow', username]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Unfollow failed');
+}
