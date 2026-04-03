@@ -1,11 +1,18 @@
 /**
  * Cookie extraction helper using Playwright.
  *
- * Two modes:
- *   1. Headless (default) — reuses an existing persistent browser profile.
+ * Three modes (tried in order):
+ *   1. CDP (automatic) — connects to an already-running Chrome via CDP
+ *      (PLAYWRIGHT_MCP_CDP_ENDPOINT or derived from STEEL_LOCAL_URLS).
+ *      Reads cookies directly from the running browser's in-memory state.
+ *      This is the preferred path in the CrossMind agent runtime because:
+ *        - No profile lock conflicts
+ *        - No SQLite encryption to deal with
+ *        - Reads live in-memory cookies immediately after user login
+ *   2. Headless (default) — reuses an existing persistent browser profile.
  *      Extracts cookies silently if the session is still valid.
  *      Fails fast (throws ExtractCookieLoginRequired) when not logged in.
- *   2. Headed — opens a visible browser window for first-time / re-login.
+ *   3. Headed — opens a visible browser window for first-time / re-login.
  *      Waits for the user to complete login, then saves cookies.
  *
  * Profile directory: ~/.config/crossmind/browser-profiles/<platform>/
@@ -97,6 +104,64 @@ export const COOKIE_TARGETS: Record<string, CookieTarget> = {
 };
 
 /**
+ * Resolve the CDP WebSocket endpoint for the running MCP browser.
+ *
+ * Resolution order:
+ *   1. PLAYWRIGHT_MCP_CDP_ENDPOINT env var (set explicitly by the runtime)
+ *   2. Derived from STEEL_LOCAL_URLS (first URL → ws://.../browser/1/)
+ *   3. undefined — CDP path not available, fall back to profile mode
+ */
+function resolveCdpEndpoint(): string | undefined {
+  const explicit = process.env['PLAYWRIGHT_MCP_CDP_ENDPOINT'];
+  if (explicit) return explicit;
+
+  const steelUrls = process.env['STEEL_LOCAL_URLS'];
+  if (steelUrls) {
+    const first = steelUrls.split(',')[0]?.trim();
+    if (first) {
+      // http://browser-1:3000 → ws://browser-1:3000/browser/1/
+      return first.replace(/^http/, 'ws') + '/browser/1/';
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Extract cookies from the currently running Chrome via CDP.
+ * Returns extracted cookie values, or undefined if the platform's cookies
+ * are not present (e.g. user is not logged in).
+ */
+async function extractViaCdp(
+  target: CookieTarget,
+  accountName: string,
+  dataDir: string | undefined,
+  cdpEndpoint: string,
+): Promise<boolean> {
+  const browser = await chromium.connectOverCDP(cdpEndpoint, { timeout: 10_000 });
+  try {
+    const contexts = browser.contexts();
+    if (contexts.length === 0) return false;
+
+    // Search all contexts for the target cookies
+    for (const ctx of contexts) {
+      const cookies = await ctx.cookies();
+      const hasCookies = target.cookieNames.some(name =>
+        cookies.some(c => c.name === name && c.value)
+      );
+      if (hasCookies) {
+        await savePlatformCookies(target, accountName, dataDir, cookies);
+        return true;
+      }
+    }
+    return false;
+  } finally {
+    // connectOverCDP — close without shutting down the remote browser
+    await browser.close();
+  }
+}
+
+/**
  * Thrown when the browser is not logged in and headed mode is needed.
  * Callers that run autonomously can catch this and trigger a browser takeover.
  */
@@ -115,7 +180,8 @@ export class ExtractCookieLoginRequired extends Error {
  *
  * Resolution order (first match wins):
  *   1. Explicit argument passed by the caller (e.g. from --profile-dir CLI flag)
- *   2. BROWSER_USER_DATA_DIR env var
+ *   2. CROSSMIND_BROWSER_PROFILE_DIR env var (CLI-specific; avoids clash with
+ *      BROWSER_USER_DATA_DIR which is injected by the CrossMind MCP runtime)
  *   3. ~/.config/crossmind/browser-profiles/<platform>/ — local fallback (auto-created)
  */
 function resolveProfileDir(platformKey: string, explicit?: string): string {
@@ -123,8 +189,8 @@ function resolveProfileDir(platformKey: string, explicit?: string): string {
     fs.mkdirSync(explicit, { recursive: true });
     return explicit;
   }
-  if (process.env['BROWSER_USER_DATA_DIR']) {
-    const dir = process.env['BROWSER_USER_DATA_DIR'];
+  if (process.env['CROSSMIND_BROWSER_PROFILE_DIR']) {
+    const dir = process.env['CROSSMIND_BROWSER_PROFILE_DIR'];
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   }
@@ -177,28 +243,55 @@ export async function extractAndSaveCookies(
     );
   }
 
+  // ── CDP path: preferred in CrossMind agent runtime ───────────────────────
+  // When a running Chrome is accessible via CDP (PLAYWRIGHT_MCP_CDP_ENDPOINT
+  // or STEEL_LOCAL_URLS), read cookies directly from its in-memory state.
+  // This avoids profile lock conflicts and SQLite encryption entirely.
+  if (!headed) {
+    const cdpEndpoint = resolveCdpEndpoint();
+    if (cdpEndpoint) {
+      try {
+        const found = await extractViaCdp(target, accountName, dataDir, cdpEndpoint);
+        if (found) return;
+        // Cookies not present in running browser — user may not be logged in
+        throw new ExtractCookieLoginRequired(platformKey);
+      } catch (err) {
+        if (err instanceof ExtractCookieLoginRequired) throw err;
+        // CDP connection failed (e.g. not in CrossMind runtime) — fall through
+      }
+    }
+  }
+
+  // ── Profile path: local Chrome with persistent profile ───────────────────
   const profile = resolveProfileDir(platformKey, profileDir);
 
-  // Pre-flight checks
-  if (isProfileLocked(profile)) {
-    throw new Error(
-      `Profile is locked by another browser instance.\n` +
-      `  Profile: ${profile}\n` +
-      `  Close the browser using this profile and try again.`
-    );
-  }
-
-  if (!hasCookiesDatabase(profile)) {
-    throw new Error(
-      `No cookies database found in profile.\n` +
-      `  Profile: ${profile}\n` +
-      `  Please log in to ${platformKey} first using a browser with this profile.`
-    );
-  }
-
   if (headed) {
+    // Headed mode: launch a visible browser for first-time / re-login.
+    // No pre-existing profile required — Chrome will create it on first run.
+    if (isProfileLocked(profile)) {
+      throw new Error(
+        `Profile is locked by another browser instance.\n` +
+        `  Profile: ${profile}\n` +
+        `  Close the browser using this profile and try again.`
+      );
+    }
     await extractHeaded(target, accountName, dataDir, profile);
   } else {
+    // Headless mode: reuse an existing session saved to the profile.
+    if (isProfileLocked(profile)) {
+      throw new Error(
+        `Profile is locked by another browser instance.\n` +
+        `  Profile: ${profile}\n` +
+        `  Close the browser using this profile and try again.`
+      );
+    }
+    if (!hasCookiesDatabase(profile)) {
+      throw new Error(
+        `No cookies database found in profile.\n` +
+        `  Profile: ${profile}\n` +
+        `  Please log in to ${platformKey} first using a browser with this profile.`
+      );
+    }
     await extractHeadless(target, accountName, dataDir, profile);
   }
 }
