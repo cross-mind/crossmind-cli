@@ -366,7 +366,13 @@ def _gql_post(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
         body["queryId"] = qid
         resp = _retry_on_tls(lambda: _get_session().post(url, headers=_headers(path=path, method="POST"), json=body, timeout=20))
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    errors = data.get("errors")
+    if errors:
+        msg = errors[0].get("message", str(errors[0]))
+        code = errors[0].get("code", "")
+        raise ValueError(f"X GraphQL error [{code}]: {msg}")
+    return data
 
 # ── Response parsers ─────────────────────────────────────────────────────────
 
@@ -659,6 +665,11 @@ def cmd_list(list_id: str, count: int = 20) -> None:
     tweets = _tweets_from_instructions(instructions)
     _out(True, tweets)
 
+def cmd_delete(tweet_id: str) -> None:
+    variables = {"tweet_id": tweet_id, "dark_request": False}
+    _gql_post("DeleteTweet", variables)
+    _out(True, {"deleted": True})
+
 def cmd_bookmark(tweet_id: str) -> None:
     variables = {"tweet_id": tweet_id}
     _gql_post("CreateBookmark", variables)
@@ -753,6 +764,11 @@ def main() -> None:
                 _out(False, None, "list requires a list_id argument")
             else:
                 cmd_list(rest[0], count)
+        elif cmd == "delete":
+            if not rest:
+                _out(False, None, "delete requires a tweet_id argument")
+            else:
+                cmd_delete(rest[0])
         elif cmd == "bookmark":
             if not rest:
                 _out(False, None, "bookmark requires a tweet_id argument")

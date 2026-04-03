@@ -4,7 +4,7 @@
  *
  * Auth strategy:
  *   - OAuth access token (X_ACCESS_TOKEN or stored accessToken) → v2 REST write ops
- *   - Cookie auth (authToken + ct0)  → bridge-based ops (bookmark, unbookmark)
+ *   - Cookie auth (authToken + ct0)  → bridge-based ops (reply, delete, bookmark, unbookmark)
  *   Either credential type satisfies getXCreds; specific ops check what they need.
  */
 
@@ -16,6 +16,7 @@ import { checkWriteDuplicate, recordWrite } from '../../http/write-history.js';
 import {
   isCookieClientAvailable,
   bridgeReply,
+  bridgeDelete,
   bridgeBookmark,
   bridgeUnbookmark,
 } from '../../http/x-bridge.js';
@@ -331,6 +332,12 @@ export async function deleteTweet(
   await checkWriteLimit('x', 'delete', dataDir);
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
+
+  // Prefer cookie auth (GraphQL) when available; fall back to OAuth v2 REST.
+  if (creds.authToken && creds.ct0) {
+    await bridgeDelete(tweetId, creds as { authToken: string; ct0: string });
+    return { success: true, message: `deleted:${tweetId}` };
+  }
 
   await xRequest(
     `/2/tweets/${tweetId}`,

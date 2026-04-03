@@ -30,8 +30,8 @@ export function registerX(program: Command): void {
     .addHelpText('after', `
 
 Auth requirements:
-  Cookie (auth_token + ct0):   bookmarks, notifications, bookmark/unbookmark
-  OAuth (access_token):        tweet, reply, DM, like, follow, analytics, dm-list
+  Cookie (auth_token + ct0):   bookmarks, notifications, bookmark/unbookmark, reply (fallback), delete
+  OAuth (access_token):        tweet, reply, DM, like, follow, analytics, dm-list, delete (fallback)
   Public bearer:               search only
 
   Get cookie:  crossmind extract-cookie x

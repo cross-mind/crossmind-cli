@@ -272,6 +272,13 @@ export async function bridgeReply(
   return result.data;
 }
 
+export async function bridgeDelete(
+  tweetId: string, creds: { authToken: string; ct0: string }
+): Promise<void> {
+  const result = await runFetch<CliResponse<unknown>>(creds, ['delete', tweetId]);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Delete failed');
+}
+
 export async function bridgeBookmark(
   tweetId: string, creds: { authToken: string; ct0: string }
 ): Promise<void> {
