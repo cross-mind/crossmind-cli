@@ -19,8 +19,8 @@ import {
 } from '../../http/reddit-bridge.js';
 
 /** Convert stored cookie credentials to bridge format. */
-function cookieCreds(c: { session: string; modhash?: string; csrfToken?: string; loid?: string }): RedditCookieCreds {
-  return { session: c.session, csrfToken: c.csrfToken, loid: c.loid, modhash: c.modhash };
+function cookieCreds(c: { session: string; modhash?: string; csrfToken?: string; loid?: string }, proxy?: string): RedditCookieCreds {
+  return { session: c.session, csrfToken: c.csrfToken, loid: c.loid, modhash: c.modhash, proxy };
 }
 
 export interface RedditPost {
@@ -95,11 +95,12 @@ export async function getSubreddit(
   limit: number,
   time: 'hour' | 'day' | 'week' | 'month' | 'year' | 'all',
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  proxy?: string
 ): Promise<RedditPost[]> {
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
-    return bridgeSubreddit(subreddit, sort, limit, cookieCreds(creds));
+    return bridgeSubreddit(subreddit, sort, limit, cookieCreds(creds, proxy));
   }
   const { baseUrl, headers } = await resolveAuth(account, dataDir);
   const timeParam = sort === 'top' ? `&t=${time}` : '';
@@ -115,11 +116,12 @@ export async function searchReddit(
   sort: 'relevance' | 'new' | 'top' | 'comments',
   limit: number,
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  proxy?: string
 ): Promise<RedditPost[]> {
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
-    return bridgeSearch(query, subreddit, sort, limit, cookieCreds(creds));
+    return bridgeSearch(query, subreddit, sort, limit, cookieCreds(creds, proxy));
   }
   const { baseUrl, headers } = await resolveAuth(account, dataDir);
   const subredditPath = subreddit ? `/r/${subreddit}` : '';
@@ -163,9 +165,10 @@ export async function getPopular(
   limit: number,
   time: 'hour' | 'day' | 'week' | 'month' | 'year' | 'all',
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  proxy?: string
 ): Promise<RedditPost[]> {
-  return getSubreddit('popular', sort, limit, time, account, dataDir);
+  return getSubreddit('popular', sort, limit, time, account, dataDir, proxy);
 }
 
 /** Browse /r/all */
@@ -174,9 +177,10 @@ export async function getAll(
   limit: number,
   time: 'hour' | 'day' | 'week' | 'month' | 'year' | 'all',
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  proxy?: string
 ): Promise<RedditPost[]> {
-  return getSubreddit('all', sort, limit, time, account, dataDir);
+  return getSubreddit('all', sort, limit, time, account, dataDir, proxy);
 }
 
 /** Get subreddit metadata */
@@ -206,11 +210,12 @@ export async function getSubredditInfo(
 export async function getRedditUserProfile(
   username: string,
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  proxy?: string
 ): Promise<RedditUserProfile> {
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
-    return bridgeUser(username, cookieCreds(creds));
+    return bridgeUser(username, cookieCreds(creds, proxy));
   }
   const { baseUrl, headers } = await resolveAuth(account, dataDir);
   const data = await request<{ data: Record<string, unknown> }>(
@@ -235,11 +240,12 @@ export async function getUserPosts(
   sort: 'hot' | 'new' | 'top',
   limit: number,
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  proxy?: string
 ): Promise<RedditPost[]> {
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
-    return bridgeUserPosts(username, limit, cookieCreds(creds));
+    return bridgeUserPosts(username, limit, cookieCreds(creds, proxy));
   }
   const { baseUrl, headers } = await resolveAuth(account, dataDir);
   const url = `${baseUrl}/user/${username}/submitted.json?sort=${sort}&limit=${Math.min(limit, 100)}`;
@@ -284,13 +290,14 @@ export async function getPost(
   sort: 'best' | 'top' | 'new' | 'controversial' | 'old',
   limit: number,
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  proxy?: string
 ): Promise<RedditPostDetail> {
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
     // bridge uses subreddit='' — reddit-fetch.py fetches from /comments/<id>.json
     const id = postId.replace(/^t3_/, '');
-    return bridgePostFetch('', id, limit, cookieCreds(creds));
+    return bridgePostFetch('', id, limit, cookieCreds(creds, proxy));
   }
   const { baseUrl, headers } = await resolveAuth(account, dataDir);
   // Strip t3_ prefix if present
@@ -336,11 +343,12 @@ export async function getHomeFeed(
   sort: 'hot' | 'new' | 'top' | 'rising',
   limit: number,
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  proxy?: string
 ): Promise<RedditPost[]> {
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
-    return bridgeHome(limit, cookieCreds(creds));
+    return bridgeHome(limit, cookieCreds(creds, proxy));
   }
   const { baseUrl, headers } = await resolveAuth(account, dataDir);
   if (baseUrl === 'https://www.reddit.com' && !headers['Cookie'] && !headers['Authorization']) {
@@ -356,11 +364,12 @@ export async function getHomeFeed(
 export async function getSaved(
   limit: number,
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  proxy?: string
 ): Promise<RedditPost[]> {
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
-    return bridgeSaved(limit, cookieCreds(creds));
+    return bridgeSaved(limit, cookieCreds(creds, proxy));
   }
   const { baseUrl, headers } = await resolveAuth(account, dataDir);
   if (baseUrl === 'https://www.reddit.com' && !headers['Cookie'] && !headers['Authorization']) {
@@ -384,11 +393,12 @@ export async function getPostComments(
   postId: string,
   limit: number,
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  proxy?: string
 ): Promise<RedditComment[]> {
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
-    const detail = await bridgePostFetch(subreddit, postId, limit, cookieCreds(creds));
+    const detail = await bridgePostFetch(subreddit, postId, limit, cookieCreds(creds, proxy));
     return detail.comments;
   }
   const { baseUrl, headers } = await resolveAuth(account, dataDir);

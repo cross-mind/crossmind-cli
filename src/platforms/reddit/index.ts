@@ -40,16 +40,17 @@ Auth requirements:
     .option('--time <time>', 'Time filter for top: hour, day, week, month, year, all (default: day)', 'day')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
+    .option('--proxy <url>', 'SOCKS5/HTTP proxy URL (e.g. socks5h://user:pass@host:port)')
     .option('--json', 'Output as JSON array')
     .action(async (
       subreddit: string,
       limitArg: string | undefined,
-      opts: { sort: string; time: string; account?: string; dataDir?: string; json?: boolean }
+      opts: { sort: string; time: string; account?: string; dataDir?: string; proxy?: string; json?: boolean }
     ) => {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 25;
       try {
-        const items = await getSubreddit(subreddit, opts.sort as 'hot', limit, opts.time as 'day', opts.account, opts.dataDir);
+        const items = await getSubreddit(subreddit, opts.sort as 'hot', limit, opts.time as 'day', opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, `reddit/r/${subreddit}`, start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -64,16 +65,17 @@ Auth requirements:
     .option('--sort <sort>', 'Sort: relevance, new, top, comments (default: relevance)', 'relevance')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
+    .option('--proxy <url>', 'SOCKS5/HTTP proxy URL (e.g. socks5h://user:pass@host:port)')
     .option('--json', 'Output as JSON array')
     .action(async (
       query: string,
       limitArg: string | undefined,
-      opts: { sub?: string; sort: string; account?: string; dataDir?: string; json?: boolean }
+      opts: { sub?: string; sort: string; account?: string; dataDir?: string; proxy?: string; json?: boolean }
     ) => {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 25;
       try {
-        const items = await searchReddit(query, opts.sub, opts.sort as 'relevance', limit, opts.account, opts.dataDir);
+        const items = await searchReddit(query, opts.sub, opts.sort as 'relevance', limit, opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, 'reddit/search', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -86,17 +88,18 @@ Auth requirements:
     .description('Get comments for a post (post_id from URL, e.g. abc123)')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
+    .option('--proxy <url>', 'SOCKS5/HTTP proxy URL (e.g. socks5h://user:pass@host:port)')
     .option('--json', 'Output as JSON array')
     .action(async (
       subreddit: string,
       postId: string,
       limitArg: string | undefined,
-      opts: { account?: string; dataDir?: string; json?: boolean }
+      opts: { account?: string; dataDir?: string; proxy?: string; json?: boolean }
     ) => {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 25;
       try {
-        const items = await getPostComments(subreddit, postId, limit, opts.account, opts.dataDir);
+        const items = await getPostComments(subreddit, postId, limit, opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], COMMENT_TEMPLATE, `reddit/comments/${postId}`, start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -111,12 +114,13 @@ Auth requirements:
     .option('--time <time>', 'Time filter for top', 'day')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
+    .option('--proxy <url>', 'SOCKS5/HTTP proxy URL (e.g. socks5h://user:pass@host:port)')
     .option('--json', 'Output as JSON array')
-    .action(async (limitArg: string | undefined, opts: { sort: string; time: string; account?: string; dataDir?: string; json?: boolean }) => {
+    .action(async (limitArg: string | undefined, opts: { sort: string; time: string; account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 25;
       try {
-        const items = await getPopular(opts.sort as 'hot', limit, opts.time as 'day', opts.account, opts.dataDir);
+        const items = await getPopular(opts.sort as 'hot', limit, opts.time as 'day', opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, 'reddit/popular', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -131,12 +135,13 @@ Auth requirements:
     .option('--time <time>', 'Time filter for top', 'day')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
+    .option('--proxy <url>', 'SOCKS5/HTTP proxy URL (e.g. socks5h://user:pass@host:port)')
     .option('--json', 'Output as JSON array')
-    .action(async (limitArg: string | undefined, opts: { sort: string; time: string; account?: string; dataDir?: string; json?: boolean }) => {
+    .action(async (limitArg: string | undefined, opts: { sort: string; time: string; account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 25;
       try {
-        const items = await getAll(opts.sort as 'hot', limit, opts.time as 'day', opts.account, opts.dataDir);
+        const items = await getAll(opts.sort as 'hot', limit, opts.time as 'day', opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, 'reddit/all', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -166,11 +171,12 @@ Auth requirements:
     .description('Get a Reddit user profile')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
+    .option('--proxy <url>', 'SOCKS5/HTTP proxy URL (e.g. socks5h://user:pass@host:port)')
     .option('--json', 'Output as JSON')
-    .action(async (username: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
+    .action(async (username: string, opts: { account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       const start = Date.now();
       try {
-        const profile = await getRedditUserProfile(username, opts.account, opts.dataDir);
+        const profile = await getRedditUserProfile(username, opts.account, opts.dataDir, opts.proxy);
         printOutput([profile] as unknown as Record<string, unknown>[], USER_TEMPLATE, `reddit/user/${username}`, start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -184,12 +190,13 @@ Auth requirements:
     .option('--sort <sort>', 'Sort: hot, new, top', 'new')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
+    .option('--proxy <url>', 'SOCKS5/HTTP proxy URL (e.g. socks5h://user:pass@host:port)')
     .option('--json', 'Output as JSON array')
-    .action(async (username: string, limitArg: string | undefined, opts: { sort: string; account?: string; dataDir?: string; json?: boolean }) => {
+    .action(async (username: string, limitArg: string | undefined, opts: { sort: string; account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 25;
       try {
-        const items = await getUserPosts(username, opts.sort as 'new', limit, opts.account, opts.dataDir);
+        const items = await getUserPosts(username, opts.sort as 'new', limit, opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, `reddit/user-posts/${username}`, start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -222,12 +229,13 @@ Auth requirements:
     .option('--sort <sort>', 'Comment sort: best, top, new, controversial, old', 'best')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
+    .option('--proxy <url>', 'SOCKS5/HTTP proxy URL (e.g. socks5h://user:pass@host:port)')
     .option('--json', 'Output as JSON')
-    .action(async (postId: string, limitArg: string | undefined, opts: { sort: string; account?: string; dataDir?: string; json?: boolean }) => {
+    .action(async (postId: string, limitArg: string | undefined, opts: { sort: string; account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 25;
       try {
-        const detail = await getPost(postId, opts.sort as 'best', limit, opts.account, opts.dataDir);
+        const detail = await getPost(postId, opts.sort as 'best', limit, opts.account, opts.dataDir, opts.proxy);
         if (opts.json) {
           console.log(JSON.stringify(detail, null, 2));
         } else {
@@ -248,12 +256,13 @@ Auth requirements:
     .option('--sort <sort>', 'Sort: hot, new, top, rising', 'hot')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
+    .option('--proxy <url>', 'SOCKS5/HTTP proxy URL (e.g. socks5h://user:pass@host:port)')
     .option('--json', 'Output as JSON array')
-    .action(async (limitArg: string | undefined, opts: { sort: string; account?: string; dataDir?: string; json?: boolean }) => {
+    .action(async (limitArg: string | undefined, opts: { sort: string; account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 25;
       try {
-        const items = await getHomeFeed(opts.sort as 'hot', limit, opts.account, opts.dataDir);
+        const items = await getHomeFeed(opts.sort as 'hot', limit, opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, 'reddit/home', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -287,9 +296,10 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (parentId: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean }) => {
+    .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
+    .action(async (parentId: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string }) => {
       try {
-        const result = await submitComment(parentId, text, opts.account, opts.dataDir, !!opts.force);
+        const result = await submitComment(parentId, text, opts.account, opts.dataDir, !!opts.force, opts.proxy);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -302,9 +312,10 @@ Auth requirements:
     .description('Upvote a post or comment (fullname: t3_xxx or t1_xxx)')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (id: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
+    .action(async (id: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
       try {
-        const result = await vote(id, 1, opts.account, opts.dataDir);
+        const result = await vote(id, 1, opts.account, opts.dataDir, opts.proxy);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -317,9 +328,10 @@ Auth requirements:
     .description('Downvote a post or comment')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (id: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
+    .action(async (id: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
       try {
-        const result = await vote(id, -1, opts.account, opts.dataDir);
+        const result = await vote(id, -1, opts.account, opts.dataDir, opts.proxy);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -332,9 +344,10 @@ Auth requirements:
     .description('Save a post or comment')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (id: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
+    .action(async (id: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
       try {
-        const result = await saveItem(id, opts.account, opts.dataDir);
+        const result = await saveItem(id, opts.account, opts.dataDir, opts.proxy);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -347,9 +360,10 @@ Auth requirements:
     .description('Subscribe to a subreddit')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (subreddit: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
+    .action(async (subreddit: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
       try {
-        const result = await subscribeSubreddit(subreddit, 'sub', opts.account, opts.dataDir);
+        const result = await subscribeSubreddit(subreddit, 'sub', opts.account, opts.dataDir, opts.proxy);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -362,9 +376,10 @@ Auth requirements:
     .description('Unsubscribe from a subreddit')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (subreddit: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
+    .action(async (subreddit: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
       try {
-        const result = await subscribeSubreddit(subreddit, 'unsub', opts.account, opts.dataDir);
+        const result = await subscribeSubreddit(subreddit, 'unsub', opts.account, opts.dataDir, opts.proxy);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -378,9 +393,10 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (subreddit: string, title: string, url: string, opts: { account?: string; dataDir?: string; force?: boolean }) => {
+    .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
+    .action(async (subreddit: string, title: string, url: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string }) => {
       try {
-        const result = await submitPost(subreddit, title, url, opts.account, opts.dataDir, !!opts.force);
+        const result = await submitPost(subreddit, title, url, opts.account, opts.dataDir, !!opts.force, opts.proxy);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -394,9 +410,10 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (subreddit: string, title: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean }) => {
+    .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
+    .action(async (subreddit: string, title: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string }) => {
       try {
-        const result = await submitTextPost(subreddit, title, text, opts.account, opts.dataDir, !!opts.force);
+        const result = await submitTextPost(subreddit, title, text, opts.account, opts.dataDir, !!opts.force, opts.proxy);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -410,9 +427,10 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (targetSub: string, postId: string, title: string, opts: { account?: string; dataDir?: string; force?: boolean }) => {
+    .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
+    .action(async (targetSub: string, postId: string, title: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string }) => {
       try {
-        const result = await crosspost(targetSub, postId, title, opts.account, opts.dataDir, !!opts.force);
+        const result = await crosspost(targetSub, postId, title, opts.account, opts.dataDir, !!opts.force, opts.proxy);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -425,9 +443,10 @@ Auth requirements:
     .description('Delete your own post or comment (fullname: t3_<postId> or t1_<commentId>)')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (fullname: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
+    .action(async (fullname: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
       try {
-        const result = await deleteItem(fullname, opts.account, opts.dataDir);
+        const result = await deleteItem(fullname, opts.account, opts.dataDir, opts.proxy);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
