@@ -21,6 +21,7 @@ import {
   bridgeBookmark,
   bridgeUnbookmark,
   bridgePost,
+  bridgeArticle,
   bridgeQuote,
   bridgeLike,
   bridgeUnlike,
@@ -94,8 +95,14 @@ export async function uploadMedia(
     throw new Error(`Media upload failed (${res.status}): ${body}`);
   }
 
-  const data = await res.json() as { data: { media_key: string } };
-  return data.data.media_key;
+  const raw = await res.json() as { data?: { id?: string; media_key?: string }; media_id_string?: string; media_key?: string };
+  // Handle both v2 nested format { data: { id, media_key } } and v1.1 flat format { media_id_string }
+  // The tweets API requires a plain numeric id matching ^[0-9]{1,19}$
+  const numericId = raw.data?.id ?? raw.media_id_string;
+  if (numericId) return numericId;
+  // Fallback: strip type prefix from media_key (e.g. "3_2040676860531818496" → "2040676860531818496")
+  const mediaKey = raw.data?.media_key ?? raw.media_key ?? '';
+  return mediaKey.includes('_') ? mediaKey.split('_').slice(1).join('_') : mediaKey;
 }
 
 /** Post a new tweet */
@@ -488,4 +495,36 @@ export async function unbookmarkTweet(
   }
   await bridgeUnbookmark(tweetId, creds as { authToken: string; ct0: string });
   return { success: true, message: `unbookmarked:${tweetId}` };
+}
+
+/** Post an X Premium long-form article (Note). Requires cookie auth + X Premium. */
+export async function postArticle(
+  text: string,
+  account?: string,
+  dataDir?: string,
+  title?: string,
+  force?: boolean,
+): Promise<WriteResult> {
+  await checkWriteLimit('x', 'post', dataDir);
+  if (!force) {
+    const dup = await checkWriteDuplicate('x', 'article', text, undefined, dataDir);
+    if (dup.blocked) throw new Error(dup.reason);
+  }
+  const creds = await getXCreds(account, dataDir);
+  requireCookie(creds);
+  if (!await isCookieClientAvailable()) {
+    throw new Error(
+      'Articles require Python 3 with curl_cffi.\n' +
+      '  Install: uv pip install curl_cffi\n' +
+      '  Or: pip install curl_cffi'
+    );
+  }
+  await writeDelay();
+  const result = await bridgeArticle(text, creds as { authToken: string; ct0: string }, title);
+  await recordWrite('x', 'article', text, undefined, dataDir);
+  return {
+    success: true,
+    id: result.id,
+    message: `article_posted:${result.id}${title ? ` title:${title.slice(0, 40)}` : ''} text:${text.slice(0, 50)}${text.length > 50 ? '...' : ''}`,
+  };
 }
