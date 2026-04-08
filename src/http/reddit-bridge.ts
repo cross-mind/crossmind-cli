@@ -113,7 +113,7 @@ interface CliResponse<T> {
 // ── Mappers ──────────────────────────────────────────────────────────────────
 
 function mapCliPost(p: CliPost, rank: number): RedditPost {
-  return {
+  const post: RedditPost = {
     rank,
     id: String(p.id ?? ''),
     title: String(p.title ?? '').slice(0, 150),
@@ -126,6 +126,10 @@ function mapCliPost(p: CliPost, rank: number): RedditPost {
     created_utc: Number(p.created_utc ?? 0),
     flair: String(p.link_flair_text ?? ''),
   };
+  if (p.selftext) {
+    post.selftext = String(p.selftext).replace(/\n{3,}/g, '\n\n').trim().slice(0, 2000);
+  }
+  return post;
 }
 
 function mapCliComment(c: CliComment, rank: number): RedditComment {

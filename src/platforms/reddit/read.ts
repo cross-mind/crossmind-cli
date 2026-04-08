@@ -35,6 +35,7 @@ export interface RedditPost {
   domain: string;
   created_utc: number;
   flair: string;
+  selftext?: string;
 }
 
 export interface RedditComment {
@@ -316,9 +317,8 @@ export async function getPost(
   const postChildren = data[0]?.data?.children ?? [];
   const postData = (postChildren[0] as { data?: Record<string, unknown> })?.data ?? {};
   const post = mapPost(postChildren[0] ?? {}, 0);
-  // Attach self text as part of title if present
   if (postData['selftext'] && String(postData['selftext']).length > 0) {
-    post.title = post.title + ' | ' + String(postData['selftext']).replace(/\n/g, ' ').slice(0, 100);
+    post.selftext = String(postData['selftext']).replace(/\n{3,}/g, '\n\n').trim().slice(0, 2000);
   }
 
   const commentChildren = data[1]?.data?.children ?? [];

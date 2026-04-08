@@ -240,6 +240,9 @@ Auth requirements:
           console.log(JSON.stringify(detail, null, 2));
         } else {
           printOutput([detail.post] as unknown as Record<string, unknown>[], POST_TEMPLATE, `reddit/post/${postId}`, start, {});
+          if (detail.post.selftext) {
+            console.log(`\n${detail.post.selftext}\n`);
+          }
           if (detail.comments.length > 0) {
             printOutput(detail.comments as unknown as Record<string, unknown>[], COMMENT_TEMPLATE, '', start, {});
           }
