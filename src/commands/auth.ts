@@ -323,6 +323,64 @@ Examples:
         }
       }
 
+      // ── LinkedIn ──────────────────────────────────────────────────────────
+
+      console.log(`\n${sep}`);
+
+      const liAccountName = await resolveAccount('linkedin', undefined, opts.dataDir);
+      const liCred = await loadCredential('linkedin', liAccountName, opts.dataDir);
+
+      const liCookieStored = !!liCred?.cookie;
+      const liCookieEnv    = !!process.env['LI_COOKIE'];
+      const hasLiCookie    = liCookieStored || liCookieEnv;
+      const liCookieSrc    = liCookieStored ? 'stored' : liCookieEnv ? 'env var' : '';
+
+      const liOAuthStored = !!liCred?.accessToken;
+      const liOAuthEnv    = !!process.env['LINKEDIN_ACCESS_TOKEN'];
+      const hasLiOAuth    = liOAuthStored || liOAuthEnv;
+      const liOAuthSrc    = liOAuthStored ? 'stored' : liOAuthEnv ? 'env var' : '';
+
+      console.log(`\nLinkedIn  ·  account: ${liAccountName}`);
+      console.log(credLine('Cookie (session)', hasLiCookie,
+        hasLiCookie ? `${liCookieSrc}` : 'not configured'));
+      console.log(credLine('OAuth (access_token)', hasLiOAuth,
+        hasLiOAuth ? `${liOAuthSrc}` : 'not configured'));
+
+      if (!hasLiCookie && !hasLiOAuth) {
+        console.log(`\n  ${cross}  No credentials. Run: crossmind extract-cookie linkedin`);
+      } else {
+        const liRead: string[] = [];
+        const liWrite: string[] = [];
+
+        if (hasLiCookie) {
+          liRead.push('profile', 'feed');
+        }
+        if (hasLiOAuth) {
+          liWrite.push('post', 'delete');
+        }
+
+        if (liRead.length > 0) {
+          console.log(`\n  Read   ${opList(liRead).join('\n         ')}`);
+        }
+        if (liWrite.length > 0) {
+          console.log(`  Write  ${opList(liWrite).join('\n         ')}`);
+        }
+
+        const liRecs: string[] = [];
+        if (hasLiOAuth && !hasLiCookie) {
+          liRecs.push('Extract session cookies to unlock profile/feed browsing:');
+          liRecs.push('  crossmind extract-cookie linkedin');
+        }
+        if (hasLiCookie && !hasLiOAuth) {
+          liRecs.push('Add OAuth token to enable posting:');
+          liRecs.push('  crossmind auth login linkedin --access-token <token>');
+        }
+        if (liRecs.length > 0) {
+          console.log('');
+          for (const r of liRecs) console.log(`  ${warn}  ${r}`);
+        }
+      }
+
       // ── Reddit ────────────────────────────────────────────────────────────
 
       console.log(`\n${sep}`);
