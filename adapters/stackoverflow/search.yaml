@@ -16,6 +16,6 @@ map:
   author: owner.display_name
   tags: tags
   is_answered: is_answered
-  created: creation_date
+  created_at: creation_date
 template: "{rank}. score:{score} answers:{answers} views:{views} answered:{is_answered} {title} {url}"
 sort: "score desc"

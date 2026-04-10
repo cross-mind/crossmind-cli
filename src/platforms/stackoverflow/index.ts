@@ -57,7 +57,8 @@ export function registerStackOverflow(program: Command): void {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
       try {
-        const { items, template } = await executePipeline(PLATFORM, 'trending', { limit });
+        const todayUnix = Math.floor(new Date().setUTCHours(0, 0, 0, 0) / 1000);
+        const { items, template } = await executePipeline(PLATFORM, 'trending', { limit, today: todayUnix });
         printOutput(items, template, 'so/trending', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);

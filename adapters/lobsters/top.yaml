@@ -13,6 +13,6 @@ map:
   comments: comment_count
   author: submitter_user.username
   tags: tags
-  created: created_at
+  created_at: created_at
 template: "{rank}. score:{score} comments:{comments} {title} {url}"
 sort: "score desc"

@@ -11,6 +11,7 @@ map:
   score: score
   comments: descendants
   author: by
+  created_at: time
   id: id
 template: "{rank}. score:{score} comments:{comments} {title} {url}"
 sort: "score desc"

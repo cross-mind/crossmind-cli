@@ -9,6 +9,7 @@ paginate:
 responseRoot: ""
 map:
   rank: _index
+  id: id
   title: title
   url: url
   score: positive_reactions_count

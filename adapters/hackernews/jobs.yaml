@@ -11,5 +11,6 @@ map:
   title: title
   url: url
   author: by
+  created_at: time
   id: id
 template: "{rank}. {title} {url}"
