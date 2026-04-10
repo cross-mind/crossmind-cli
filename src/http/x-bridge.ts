@@ -301,6 +301,17 @@ export async function bridgePost(
   return result.data;
 }
 
+export async function bridgeArticle(
+  text: string,
+  creds: { authToken: string; ct0: string },
+  title?: string,
+): Promise<{ id: string; url?: string }> {
+  const args = ['article', text, ...(title ? ['--title', title] : [])];
+  const result = await runFetch<CliResponse<{ id: string; url?: string }>>(creds, args);
+  if (!result.ok) throw new Error(result.error?.message ?? 'Article post failed');
+  return result.data;
+}
+
 export async function bridgeQuote(
   tweetId: string, text: string, creds: { authToken: string; ct0: string }
 ): Promise<{ id: string }> {

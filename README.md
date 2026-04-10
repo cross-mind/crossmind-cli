@@ -19,7 +19,7 @@ Most social CLIs are built for humans. crossmind is built for AI agents:
 - **Compact output by default** — single-line `key:value` format, no emoji, no decorative whitespace
 - **`--json` for structured pipelines** — clean arrays with no outer wrapper
 - **No-auth first** — public platforms work out of the box, no configuration required
-- **Built-in write safety** — daily limits, write dedup, DM frequency control, random jitter delays, exponential backoff
+- **Built-in write safety** — write dedup, DM frequency control, random jitter delays, exponential backoff
 
 ## Token Benchmark
 
@@ -408,7 +408,7 @@ crossmind account use x work
 
 ## Data Directory
 
-Credentials and daily write limits are stored in `~/.crossmind/` by default.
+Credentials are stored in `~/.crossmind/` by default.
 
 Override per-command:
 ```bash
@@ -428,7 +428,7 @@ If you're using OpenClaw and want a lighter path for programmatic social access:
 |---|---|---|
 | Install | `npm install -g crossmind` | Agent config + workflow setup |
 | Output | Token-efficient single-line or `--json` | JSON |
-| Write safety | Daily limits + dedup + DM frequency + jitter | Manual configuration |
+| Write safety | Dedup + DM frequency + jitter | Manual configuration |
 | No-auth platforms | Works out of the box (HN, Reddit read, GitHub, arXiv) | Requires connector setup |
 | Managed option | [crossmind.io](https://crossmind.io) — zero config, full strategy | — |
 
@@ -440,7 +440,6 @@ Write operations have multi-layer protection to prevent account bans:
 
 | Protection       | Details                                                    |
 |------------------|------------------------------------------------------------|
-| Daily limits     | Per-operation caps (post: 10/day, reply: 30, like: 100)    |
 | Write dedup      | Blocks duplicate or near-duplicate content within a configurable window (default 48h) |
 | DM frequency     | Prevents repeated DMs to the same user within the window — shows previous message for quick review |
 | Random jitter    | 1.5–4s random delay between write ops                      |

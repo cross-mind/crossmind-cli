@@ -11,7 +11,7 @@
 
 import { xRequest } from '../../http/x-client.js';
 import { loadXCredentials } from '../../auth/x.js';
-import { checkWriteLimit, writeDelay } from '../../http/rate-limiter.js';
+import { writeDelay } from '../../http/rate-limiter.js';
 import { AuthError } from '../../http/client.js';
 import { checkWriteDuplicate, recordWrite } from '../../http/write-history.js';
 import {
@@ -113,7 +113,6 @@ export async function postTweet(
   mediaIds?: string[],
   force?: boolean
 ): Promise<WriteResult> {
-  await checkWriteLimit('x', 'post', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('x', 'tweet', text, undefined, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
@@ -159,7 +158,6 @@ export async function replyToTweet(
   mediaIds?: string[],
   force?: boolean
 ): Promise<WriteResult> {
-  await checkWriteLimit('x', 'reply', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('x', 'reply', text, tweetId, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
@@ -200,7 +198,6 @@ export async function likeTweet(
   account?: string,
   dataDir?: string
 ): Promise<WriteResult> {
-  await checkWriteLimit('x', 'like', dataDir);
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
@@ -222,7 +219,6 @@ export async function retweetTweet(
   account?: string,
   dataDir?: string
 ): Promise<WriteResult> {
-  await checkWriteLimit('x', 'retweet', dataDir);
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
@@ -244,7 +240,6 @@ export async function followUser(
   account?: string,
   dataDir?: string
 ): Promise<WriteResult> {
-  await checkWriteLimit('x', 'follow', dataDir);
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
@@ -275,7 +270,6 @@ export async function sendDM(
   dataDir?: string,
   force?: boolean
 ): Promise<WriteResult> {
-  await checkWriteLimit('x', 'dm', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('x', 'dm', text, username, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
@@ -334,7 +328,6 @@ export async function deleteTweet(
   account?: string,
   dataDir?: string
 ): Promise<WriteResult> {
-  await checkWriteLimit('x', 'delete', dataDir);
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
@@ -352,6 +345,35 @@ export async function deleteTweet(
   return { success: true, message: `deleted:${tweetId}` };
 }
 
+/** Batch-delete tweets. */
+export interface BatchDeleteResult {
+  deleted: string[];
+  failed: Array<{ id: string; error: string }>;
+}
+
+export async function deleteTweets(
+  tweetIds: string[],
+  account?: string,
+  dataDir?: string
+): Promise<BatchDeleteResult> {
+  const result: BatchDeleteResult = {
+    deleted: [],
+    failed: [],
+  };
+
+  for (const id of tweetIds) {
+    try {
+      await deleteTweet(id, account, dataDir);
+      result.deleted.push(id);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.failed.push({ id, error: msg });
+    }
+  }
+
+  return result;
+}
+
 // ── Phase 2 write additions ────────────────────────────────────────────────
 
 /** Quote-tweet */
@@ -362,7 +384,6 @@ export async function quoteTweet(
   dataDir?: string,
   force?: boolean
 ): Promise<WriteResult> {
-  await checkWriteLimit('x', 'post', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('x', 'quote', text, tweetId, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
@@ -505,7 +526,6 @@ export async function postArticle(
   title?: string,
   force?: boolean,
 ): Promise<WriteResult> {
-  await checkWriteLimit('x', 'post', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('x', 'article', text, undefined, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
@@ -522,9 +542,10 @@ export async function postArticle(
   await writeDelay();
   const result = await bridgeArticle(text, creds as { authToken: string; ct0: string }, title);
   await recordWrite('x', 'article', text, undefined, dataDir);
+  const articleUrl = result.url ?? `https://x.com/i/article/${result.id}`;
   return {
     success: true,
     id: result.id,
-    message: `article_posted:${result.id}${title ? ` title:${title.slice(0, 40)}` : ''} text:${text.slice(0, 50)}${text.length > 50 ? '...' : ''}`,
+    message: `article_posted:${result.id}${title ? ` title:${title.slice(0, 40)}` : ''} url:${articleUrl}`,
   };
 }

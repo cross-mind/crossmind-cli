@@ -170,31 +170,6 @@ describe('auth/oauth', () => {
   });
 });
 
-// ── Rate limiter ──────────────────────────────────────────────────────────
-
-describe('http/rate-limiter', () => {
-  const LIMIT_DIR = `/tmp/crossmind-ratelimit-${Date.now()}`;
-
-  test('checkWriteLimit: first call succeeds', async () => {
-    const { checkWriteLimit } = await import('../src/http/rate-limiter.js');
-    await assert.doesNotReject(() => checkWriteLimit('x', 'post', LIMIT_DIR));
-  });
-
-  test('checkWriteLimit: throws RateLimitError after exceeding daily limit', async () => {
-    const { checkWriteLimit } = await import('../src/http/rate-limiter.js');
-    // x.post limit is 10/day — burn through them
-    const promises = Array.from({ length: 10 }, () => checkWriteLimit('x', 'post', LIMIT_DIR));
-    await Promise.allSettled(promises);
-
-    try {
-      await checkWriteLimit('x', 'post', LIMIT_DIR);
-      // If we reach here, check may have reset (same day boundary edge case)
-    } catch (err) {
-      assert.match(String(err), /daily.*limit|rate.*limit/i);
-    }
-  });
-});
-
 // ── Pipeline YAML parser ──────────────────────────────────────────────────
 
 describe('http/pipeline (YAML parsing)', () => {

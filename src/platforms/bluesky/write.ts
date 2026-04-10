@@ -5,7 +5,7 @@
 
 import { request } from '../../http/client.js';
 import { getBskyToken, bskyHeaders, BSKY_API } from '../../auth/bluesky.js';
-import { checkWriteLimit, writeDelay } from '../../http/rate-limiter.js';
+import { writeDelay } from '../../http/rate-limiter.js';
 import { checkWriteDuplicate, recordWrite } from '../../http/write-history.js';
 
 const BSKY_XRPC = `${BSKY_API}/xrpc`;
@@ -24,7 +24,6 @@ export async function createPost(
   dataDir?: string,
   force?: boolean
 ): Promise<BskyWriteResult> {
-  await checkWriteLimit('bsky', 'post', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('bsky', 'post', text, undefined, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
@@ -69,7 +68,6 @@ export async function replyToPost(
   dataDir?: string,
   force?: boolean
 ): Promise<BskyWriteResult> {
-  await checkWriteLimit('bsky', 'reply', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('bsky', 'reply', text, parentUri, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
@@ -113,7 +111,6 @@ export async function likePost(
   account?: string,
   dataDir?: string
 ): Promise<BskyWriteResult> {
-  await checkWriteLimit('bsky', 'like', dataDir);
   const { token, did } = await getBskyToken(account, dataDir);
   await writeDelay();
 
@@ -144,7 +141,6 @@ export async function repost(
   account?: string,
   dataDir?: string
 ): Promise<BskyWriteResult> {
-  await checkWriteLimit('bsky', 'repost', dataDir);
   const { token, did } = await getBskyToken(account, dataDir);
   await writeDelay();
 
@@ -174,7 +170,6 @@ export async function followUser(
   account?: string,
   dataDir?: string
 ): Promise<BskyWriteResult> {
-  await checkWriteLimit('bsky', 'follow', dataDir);
   const { token, did } = await getBskyToken(account, dataDir);
   await writeDelay();
 

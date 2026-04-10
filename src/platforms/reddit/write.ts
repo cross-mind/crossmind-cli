@@ -10,7 +10,7 @@ import { request, AuthError } from '../../http/client.js';
 import {
   loadRedditCredentials, REDDIT_API, redditHeaders, redditCookieHeaders,
 } from '../../auth/reddit.js';
-import { checkWriteLimit, writeDelay } from '../../http/rate-limiter.js';
+import { writeDelay } from '../../http/rate-limiter.js';
 import { checkWriteDuplicate, recordWrite } from '../../http/write-history.js';
 import {
   bridgeComment, bridgeVote, bridgeSaveItem,
@@ -85,7 +85,6 @@ export async function submitComment(
   force?: boolean,
   proxy?: string
 ): Promise<RedditWriteResult> {
-  await checkWriteLimit('reddit', 'comment', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('reddit', 'comment', text, parentId, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
@@ -134,8 +133,6 @@ export async function vote(
   dataDir?: string,
   proxy?: string
 ): Promise<RedditWriteResult> {
-  await checkWriteLimit('reddit', 'upvote', dataDir);
-
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
     await writeDelay();
@@ -196,8 +193,6 @@ export async function saveItem(
   dataDir?: string,
   proxy?: string
 ): Promise<RedditWriteResult> {
-  await checkWriteLimit('reddit', 'save', dataDir);
-
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
     await writeDelay();
@@ -226,8 +221,6 @@ export async function subscribeSubreddit(
   dataDir?: string,
   proxy?: string
 ): Promise<RedditWriteResult> {
-  await checkWriteLimit('reddit', 'subscribe', dataDir);
-
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
     await writeDelay();
@@ -275,7 +268,6 @@ export async function submitTextPost(
   force?: boolean,
   proxy?: string
 ): Promise<RedditWriteResult> {
-  await checkWriteLimit('reddit', 'comment', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('reddit', 'text-post', `${title} ${text}`, subreddit, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
@@ -328,7 +320,6 @@ export async function submitPost(
   force?: boolean,
   proxy?: string
 ): Promise<RedditWriteResult> {
-  await checkWriteLimit('reddit', 'comment', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('reddit', 'post', title, subreddit, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
@@ -382,7 +373,6 @@ export async function crosspost(
   force?: boolean,
   proxy?: string
 ): Promise<RedditWriteResult> {
-  await checkWriteLimit('reddit', 'comment', dataDir);
   if (!force) {
     const dup = await checkWriteDuplicate('reddit', 'crosspost', title, targetSubreddit, dataDir);
     if (dup.blocked) throw new Error(dup.reason);

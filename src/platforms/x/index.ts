@@ -1,7 +1,7 @@
 /**
  * X (Twitter) platform commands.
  * Read: search, mentions, timeline, home, profile, thread, followers, following, bookmarks, notifications, list, likes, dm-list, dm-conversation
- * Write: tweet, reply, like, unlike, retweet, unretweet, quote, follow, unfollow, bookmark, unbookmark, dm, delete
+ * Write: tweet, article, reply, like, unlike, retweet, unretweet, quote, follow, unfollow, bookmark, unbookmark, dm, delete, delete-batch
  */
 
 import { Command } from 'commander';
@@ -11,7 +11,8 @@ import {
   getDMList, getDMConversation, getAnalytics,
 } from './read.js';
 import {
-  postTweet, replyToTweet, likeTweet, retweetTweet, followUser, sendDM, deleteTweet,
+  postTweet, postArticle, replyToTweet, likeTweet, retweetTweet, followUser, sendDM, deleteTweet,
+  deleteTweets,
   quoteTweet, unlikeTweet, unretweetTweet, unfollowUser, bookmarkTweet, unbookmarkTweet,
   uploadMedia,
 } from './write.js';
@@ -30,9 +31,11 @@ export function registerX(program: Command): void {
     .addHelpText('after', `
 
 Auth requirements:
-  Cookie (auth_token + ct0):   bookmarks, notifications, bookmark/unbookmark, reply (fallback), delete
+  Cookie (auth_token + ct0):   bookmarks, notifications, bookmark/unbookmark, article, reply (fallback), delete
   OAuth (access_token):        tweet, reply, DM, like, follow, analytics, dm-list, delete (fallback)
   Public bearer:               search only
+
+  article also requires an active X Premium subscription.
 
   Get cookie:  crossmind extract-cookie x
   Get OAuth:   crossmind auth login x --access-token <token>
@@ -347,6 +350,23 @@ Auth requirements:
     });
 
   x
+    .command('article <text>')
+    .description('Post an X Premium long-form article (requires cookie auth + X Premium)')
+    .option('--title <title>', 'Article title (optional)')
+    .option('--account <name>', 'Account to use')
+    .option('--data-dir <dir>', 'Data directory override')
+    .option('-f, --force', 'Skip duplicate content check')
+    .action(async (text: string, opts: { title?: string; account?: string; dataDir?: string; force?: boolean }) => {
+      try {
+        const result = await postArticle(text, opts.account, opts.dataDir, opts.title, !!opts.force);
+        console.log(result.message);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    });
+
+  x
     .command('reply <tweet_id> <text>')
     .description('Reply to a tweet')
     .option('--account <name>', 'Account to use')
@@ -441,6 +461,35 @@ Auth requirements:
       try {
         const result = await deleteTweet(tweetId, opts.account, opts.dataDir);
         console.log(result.message);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    });
+
+  x
+    .command('delete-batch <tweet_ids...>')
+    .description('Delete multiple tweets (space-separated IDs). Prints a summary.')
+    .option('--account <name>', 'Account to use')
+    .option('--data-dir <dir>', 'Data directory override')
+    .option('--json', 'Output result as JSON')
+    .action(async (tweetIds: string[], opts: { account?: string; dataDir?: string; json?: boolean }) => {
+      try {
+        const result = await deleteTweets(tweetIds, opts.account, opts.dataDir);
+        if (opts.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        for (const id of result.deleted) {
+          console.log(`deleted:${id}`);
+        }
+        for (const { id, error } of result.failed) {
+          console.error(`failed:${id} — ${error}`);
+        }
+        console.log(`Summary: ${result.deleted.length} deleted, ${result.failed.length} failed`);
+        if (result.failed.length > 0) {
+          process.exit(1);
+        }
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);

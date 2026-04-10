@@ -28,8 +28,12 @@ Output: JSON {"ok": true|false, "data": ..., "error": {"message": "..."}}
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import random
+import re
+import string
 import sys
 import urllib.parse
 from typing import Any, Dict, List, Optional
@@ -178,6 +182,16 @@ QUERY_IDS: Dict[str, str] = {
     "UnfavoriteTweet":          "ZYKSe-w7KEslx3JhSIk5LA",
     "CreateRetweet":            "ojPdsZsimiJrUGLR1sjUtA",
     "DeleteRetweet":            "iQtK4dl5hBmXewYZuEOKVw",
+    # X Articles (Premium-gated; loaded from lazy bundle.TwitterArticles.*.js)
+    # These are NOT in fa0311/twitter-openapi — dynamic refresh scans the article bundle.
+    "ArticleEntityDraftCreate":   "g1l5N8BxGewYuCy5USe_bQ",
+    "ArticleEntityUpdateTitle":   "x75E2ABzm8_mGTg1bz8hcA",
+    "ArticleEntityUpdateContent": "M7N2FrPrlOmu-YrVIBxFnQ",
+    "ArticleEntityPublish":       "m4SHicYMoWO_qkLvjhDk7Q",
+    "ArticleEntityUnpublish":     "WbeMAOZdMHilHrqhgpjObw",
+    "ArticleEntityDelete":        "e4lWqB6m2TA8Fn_j9L9xEA",
+    "ArticleEntitiesSlice":       "N1zzFzRPspT-sP9Q42n_bg",
+    "ArticleEntityResultByRestId":"8-OHhj8-KCAHUP8XjPaAYQ",
 }
 
 FEATURES: Dict[str, bool] = {
@@ -307,8 +321,63 @@ def _refresh_from_github() -> bool:
         pass
     return False
 
+def _refresh_from_article_bundle() -> bool:
+    """Scan the X Articles lazy JS bundle for Premium article operation query IDs.
+
+    The article operations live in a webpack lazy chunk:
+      https://abs.twimg.com/responsive-web/client-web/bundle.TwitterArticles.HASH.js
+
+    The HASH is content-based and rotates on deploy. We discover it by fetching
+    x.com/compose/articles (cookie-authed) and extracting the script URL.
+    """
+    try:
+        s = _get_session()
+        h = {
+            "authorization": f"Bearer {BEARER}",
+            "cookie": f"auth_token={AUTH_TOKEN}; ct0={CT0}",
+            "user-agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+            ),
+        }
+        page = s.get("https://x.com/compose/articles", headers=h, timeout=15)
+        # Find bundle.TwitterArticles.*.js in the page HTML
+        matches = re.findall(
+            r'"(https?://[^"]*bundle\.TwitterArticles\.[^"]+\.js)"',
+            page.text,
+        )
+        if not matches:
+            # Try relative-URL format: "/responsive-web/client-web/bundle.TwitterArticles.*.js"
+            rel = re.findall(
+                r'"(/responsive-web/client-web/bundle\.TwitterArticles\.[^"]+\.js)"',
+                page.text,
+            )
+            matches = [f"https://abs.twimg.com{m}" for m in rel]
+        if not matches:
+            return False
+        bundle_url = matches[0]
+        br = s.get(bundle_url, headers={"user-agent": "curl/8.0"}, timeout=20)
+        if br.status_code != 200:
+            return False
+        # Scan for {"queryId":"...","operationName":"..."}
+        ops = re.findall(r'\{"queryId":"([^"]+)","operationName":"([^"]+)"', br.text)
+        updated = False
+        for qid, opname in ops:
+            if QUERY_IDS.get(opname) != qid:
+                QUERY_IDS[opname] = qid
+                updated = True
+        if updated:
+            _save_query_id_cache()
+        return updated
+    except Exception:
+        return False
+
+
 def _refresh_from_bundles() -> None:
-    """Scan X JS bundles via twitter_cli._scan_bundles (deepest fallback)."""
+    """Scan X JS bundles via twitter_cli._scan_bundles (deepest fallback).
+
+    Also scans the Premium-gated TwitterArticles lazy bundle for article ops.
+    """
     try:
         if _TWITTER_CLI_VENV not in sys.path:
             sys.path.insert(0, _TWITTER_CLI_VENV)
@@ -321,6 +390,8 @@ def _refresh_from_bundles() -> None:
         _save_query_id_cache()
     except Exception:
         pass
+    # Additionally scan the lazy article bundle (not covered by main bundle scan)
+    _refresh_from_article_bundle()
 
 # Startup: tier 1 (disk) → tier 2 (GitHub) → tier 3 (bundle scan)
 if not _load_query_id_cache():
@@ -328,9 +399,21 @@ if not _load_query_id_cache():
         _refresh_from_bundles()
 
 def _resolve_query_id(operation: str, refresh: bool = False) -> str:
-    """Return queryId for operation. refresh=True forces a GitHub re-fetch."""
+    """Return queryId for operation. refresh=True forces a live re-fetch.
+
+    Resolution order on refresh:
+      1. GitHub (fa0311) — fast, covers ~95 known operations
+      2. Bundle scan — slower, covers all operations including Premium-gated ones
+         (triggered if GitHub succeeds but the specific operation is still missing)
+      3. Return empty string if still not found
+    """
     if refresh:
         if not _refresh_from_github():
+            _refresh_from_bundles()
+        elif operation not in QUERY_IDS:
+            # GitHub refreshed fine but doesn't know this operation
+            # (e.g. Premium-gated mutations like CreateNoteTweet).
+            # Fall through to the full bundle scan.
             _refresh_from_bundles()
     return QUERY_IDS.get(operation, "")
 
@@ -360,11 +443,16 @@ def _gql_get(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
 
 def _gql_post(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
     qid = _resolve_query_id(operation)
+    # If query ID was not found in any cached source, force a live bundle scan
+    # before making the first request so we don't hit the API with an empty ID.
+    if not qid:
+        _resolve_query_id(operation, refresh=True)
+        qid = QUERY_IDS.get(operation, "")
     url = f"https://x.com/i/api/graphql/{qid}/{operation}"
     path = f"/i/api/graphql/{qid}/{operation}"
     body = {"variables": variables, "queryId": qid}
     resp = _retry_on_tls(lambda: _get_session().post(url, headers=_headers(path=path, method="POST"), json=body, timeout=20))
-    if resp.status_code in (400, 403, 404):
+    if resp.status_code in (400, 403, 404, 405):
         _resolve_query_id(operation, refresh=True)
         qid = QUERY_IDS.get(operation, qid)
         url = f"https://x.com/i/api/graphql/{qid}/{operation}"
@@ -484,6 +572,17 @@ def _tweets_from_instructions(instructions: List[Dict[str, Any]]) -> List[Dict[s
                         tweets.append(t)
     return tweets
 
+def _bottom_cursor_from_instructions(instructions: List[Dict[str, Any]]) -> Optional[str]:
+    """Extract the bottom pagination cursor from a TimelineAddEntries instruction set."""
+    for inst in instructions:
+        if inst.get("type") != "TimelineAddEntries":
+            continue
+        for entry in inst.get("entries", []):
+            content = entry.get("content", {})
+            if content.get("entryType") == "TimelineTimelineCursor" and content.get("cursorType") == "Bottom":
+                return content.get("value")
+    return None
+
 def _users_from_instructions(instructions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     users = []
     for inst in instructions:
@@ -540,20 +639,42 @@ def cmd_user_posts(username: str, count: int = 20) -> None:
         _out(False, None, f"User not found: {username}")
         return
 
-    variables = {
-        "userId": user_id,
-        "count": count,
-        "includePromotedContent": False,
-        "withQuickPromoteEligibilityTweetFields": False,
-        "withVoice": True,
-        "withV2Timeline": True,
-    }
-    data = _gql_get("UserTweets", variables)
-    instructions = _extract_instructions(
-        data, ["data", "user", "result", "timeline", "timeline", "instructions"]
-    )
-    tweets = _tweets_from_instructions(instructions)
-    _out(True, tweets)
+    all_tweets: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+    cursor: Optional[str] = None
+    page_size = min(count, 40)  # X caps per-page at ~40 for UserTweets
+
+    while len(all_tweets) < count:
+        variables: Dict[str, Any] = {
+            "userId": user_id,
+            "count": page_size,
+            "includePromotedContent": False,
+            "withQuickPromoteEligibilityTweetFields": False,
+            "withVoice": True,
+            "withV2Timeline": True,
+        }
+        if cursor:
+            variables["cursor"] = cursor
+
+        data = _gql_get("UserTweets", variables)
+        instructions = _extract_instructions(
+            data, ["data", "user", "result", "timeline", "timeline", "instructions"]
+        )
+        page_tweets = _tweets_from_instructions(instructions)
+
+        # Deduplicate and accumulate
+        new_tweets = [t for t in page_tweets if t["id"] not in seen_ids]
+        for t in new_tweets:
+            seen_ids.add(t["id"])
+        all_tweets.extend(new_tweets)
+
+        # Advance cursor; stop if no new tweets or no next cursor
+        next_cursor = _bottom_cursor_from_instructions(instructions)
+        if not new_tweets or not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+
+    _out(True, all_tweets[:count])
 
 def cmd_user(username: str) -> None:
     variables = {"screen_name": username, "withSafetyModeUserFields": True}
@@ -713,6 +834,201 @@ def cmd_post(text: str) -> None:
     new_id = _dig(result, "data", "create_tweet", "tweet_results", "result", "rest_id", default="")
     _out(True, {"id": new_id})
 
+# ── X Articles helpers ──────────────────────────────────────────────────────
+
+def _random_key(n: int = 5) -> str:
+    """Generate a random Draft.js block key (alphanumeric, lowercase)."""
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
+
+
+def _strip_inline_md(text: str) -> str:
+    """Remove bold/italic/code markdown markers, leaving plain text."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'_(.+?)_', r'\1', text)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    # Strip links: [label](url) → label
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    return text.strip()
+
+
+def _is_table_sep(line: str) -> bool:
+    return bool(re.match(r'^\s*\|[-\s|:]+\|\s*$', line))
+
+
+def _mk_block(text: str, btype: str) -> Dict[str, Any]:
+    """Build a Draft.js block for X Articles API (snake_case, no depth field).
+
+    X's API input schema requires:
+    - snake_case field names: inline_style_ranges, entity_ranges
+    - NO depth field (causes GRAPHQL_VALIDATION_FAILED with any value)
+    """
+    return {
+        'key': _random_key(),
+        'text': text,
+        'type': btype,
+        'inline_style_ranges': [],
+        'entity_ranges': [],
+    }
+
+
+def _markdown_to_draftjs(markdown: str) -> Dict[str, Any]:
+    """Convert a markdown string to X Articles Draft.js content_state format.
+
+    Handles: headings (h1-h3), unordered/ordered lists, blockquotes,
+    horizontal rules (skipped), markdown tables (converted to text rows),
+    and plain paragraphs. Strips inline markdown from all block text.
+
+    Returns: {"blocks": [...], "entity_map": []}
+    """
+    blocks: List[Dict[str, Any]] = []
+    lines = markdown.split('\n')
+    i = 0
+
+    # Skip YAML front-matter block (--- ... ---)
+    if lines and lines[0].strip() == '---':
+        i = 1
+        while i < len(lines) and lines[i].strip() != '---':
+            i += 1
+        i += 1  # skip closing ---
+
+    while i < len(lines):
+        stripped = lines[i].strip()
+        i += 1
+
+        # Empty lines are block separators — skip
+        if not stripped:
+            continue
+
+        # Horizontal rules — skip (no native hr in X Articles Draft.js)
+        if re.match(r'^[-*_]{3,}$', stripped):
+            continue
+
+        # Headings
+        if stripped.startswith('### '):
+            blocks.append(_mk_block(_strip_inline_md(stripped[4:]), 'header-three'))
+            continue
+        if stripped.startswith('## '):
+            blocks.append(_mk_block(_strip_inline_md(stripped[3:]), 'header-two'))
+            continue
+        if stripped.startswith('# '):
+            blocks.append(_mk_block(_strip_inline_md(stripped[2:]), 'header-one'))
+            continue
+
+        # Unordered list items: "- " or "* "
+        if re.match(r'^[-*]\s', stripped):
+            blocks.append(_mk_block(_strip_inline_md(stripped[2:]), 'unordered-list-item'))
+            continue
+
+        # Ordered list items: "1. "
+        om = re.match(r'^\d+\.\s+(.*)', stripped)
+        if om:
+            blocks.append(_mk_block(_strip_inline_md(om.group(1)), 'ordered-list-item'))
+            continue
+
+        # Blockquote: "> "
+        if stripped.startswith('> '):
+            blocks.append(_mk_block(_strip_inline_md(stripped[2:]), 'blockquote'))
+            continue
+
+        # Markdown table — collect all rows for this table block
+        if '|' in stripped and stripped.startswith('|'):
+            table_lines = [stripped]
+            while i < len(lines):
+                nl = lines[i].strip()
+                if not nl or '|' not in nl:
+                    break
+                table_lines.append(nl)
+                i += 1
+            for row in table_lines:
+                if _is_table_sep(row):
+                    continue
+                cells = [c.strip() for c in row.strip('|').split('|')]
+                text = ' | '.join(c for c in cells if c)
+                if text:
+                    blocks.append(_mk_block(_strip_inline_md(text), 'unstyled'))
+            continue
+
+        # Plain paragraph
+        text = _strip_inline_md(stripped)
+        if text:
+            blocks.append(_mk_block(text, 'unstyled'))
+
+    return {'blocks': blocks, 'entity_map': []}
+
+
+def _decode_article_id(b64_id: str) -> str:
+    """Decode a base64 X Article entity ID to the numeric REST ID.
+
+    Input:  "QXJ0aWNsZUVudGl0eToyMDQwNzA2NDA0NTEyODc4NTkz"
+    Output: "2040706404512878593"
+    """
+    # Pad if needed
+    padded = b64_id + '=' * (-len(b64_id) % 4)
+    decoded = base64.b64decode(padded).decode('utf-8', errors='replace')
+    # Format: "ArticleEntity:NUMERIC_ID"
+    if ':' in decoded:
+        return decoded.split(':')[-1]
+    return decoded
+
+
+def cmd_article(text: str, title: Optional[str] = None) -> None:
+    """Post a real X Article (X Premium required).
+
+    Flow:
+      1. ArticleEntityDraftCreate  — create empty draft with title
+      2. ArticleEntityUpdateContent — set Draft.js body from markdown
+      3. ArticleEntityPublish       — publish draft → live article
+
+    Returns {"id": "<numeric_article_entity_id>", "url": "..."}.
+    """
+    article_title = title or "Untitled"
+
+    # ── Step 1: Create draft ─────────────────────────────────────────────────
+    create_vars: Dict[str, Any] = {
+        "title": article_title,
+        "content_state": {"blocks": [], "entity_map": []},
+    }
+    create_result = _gql_post("ArticleEntityDraftCreate", create_vars)
+    b64_id = _dig(
+        create_result,
+        "data", "articleentity_create_draft", "article_entity_results", "result", "id",
+        default="",
+    )
+    if not b64_id:
+        _out(False, None, "Failed to create article draft — no entity ID in response")
+        return
+    article_id = _decode_article_id(b64_id)
+
+    # ── Step 2: Update content ────────────────────────────────────────────────
+    content_state = _markdown_to_draftjs(text)
+    update_vars: Dict[str, Any] = {
+        "article_entity": article_id,
+        "content_state": content_state,
+    }
+    _gql_post("ArticleEntityUpdateContent", update_vars)
+
+    # ── Step 3: Publish ───────────────────────────────────────────────────────
+    publish_vars: Dict[str, Any] = {"articleEntityId": article_id}
+    try:
+        _gql_post("ArticleEntityPublish", publish_vars)
+    except ValueError as pub_err:
+        # Publish failed (e.g. daily tweet rate limit). Article was created and
+        # content was saved as a draft. Surface the draft ID so it can be
+        # published later via ArticleEntityPublish.
+        _out(False, {
+            "id": article_id,
+            "draft_url": f"https://x.com/compose/articles/edit/{article_id}",
+        }, f"Article saved as draft but publish failed: {pub_err}")
+        return
+
+    _out(True, {
+        "id": article_id,
+        "url": f"https://x.com/i/article/{article_id}",
+    })
+
+
 def cmd_quote(tweet_id: str, text: str) -> None:
     """Quote-tweet: CreateTweet with attachment_url."""
     variables = {
@@ -783,8 +1099,9 @@ def main() -> None:
     cmd = args[0]
     rest = args[1:]
 
-    # Parse --count N from rest args
+    # Parse --count N and --title TITLE from rest args
     count = 20
+    title: Optional[str] = None
     filtered: List[str] = []
     i = 0
     while i < len(rest):
@@ -793,6 +1110,9 @@ def main() -> None:
                 count = int(rest[i + 1])
             except ValueError:
                 pass
+            i += 2
+        elif rest[i] == "--title" and i + 1 < len(rest):
+            title = rest[i + 1]
             i += 2
         else:
             filtered.append(rest[i])
@@ -866,6 +1186,11 @@ def main() -> None:
                 _out(False, None, "post requires a text argument")
             else:
                 cmd_post(rest[0])
+        elif cmd == "article":
+            if not rest:
+                _out(False, None, "article requires a text argument")
+            else:
+                cmd_article(rest[0], title)
         elif cmd == "quote":
             if len(rest) < 2:
                 _out(False, None, "quote requires tweet_id and text arguments")
