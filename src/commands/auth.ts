@@ -43,8 +43,6 @@ export function registerAuthCommands(program: Command): void {
     .option('--cookie <cookie>', 'Provide raw cookie string directly')
     .option('--auth-token <authToken>', 'X: auth_token cookie value. Use with --ct0. Enables: home feed, bookmarks, notifications.')
     .option('--ct0 <ct0>', 'X: CSRF token (required with --auth-token)')
-    .option('--kdt <kdt>', 'X: kdt cookie (optional, improves follow/unfollow cookie coverage)')
-    .option('--att <att>', 'X: att cookie (optional, improves follow/unfollow cookie coverage)')
     .option('--access-token <accessToken>', 'X/LinkedIn: OAuth access token. X enables: tweet, reply, DM, like, follow, analytics, dm-list.')
     .option('--bearer-token <bearerToken>', 'X: developer bearer token. Read-only, search only. No user context.')
     .option('--handle <handle>', 'Bluesky handle (e.g. user.bsky.social)')
@@ -60,8 +58,6 @@ export function registerAuthCommands(program: Command): void {
         cookie?: string;
         authToken?: string;
         ct0?: string;
-        kdt?: string;
-        att?: string;
         accessToken?: string;
         bearerToken?: string;
         handle?: string;
@@ -85,7 +81,7 @@ export function registerAuthCommands(program: Command): void {
               console.log(`X OAuth token saved as "${accountName}".`);
             } else if (opts.authToken && opts.ct0) {
               // Direct cookie auth
-              await saveCookieAuth(accountName, opts.authToken, opts.ct0, opts.dataDir, opts.kdt, opts.att);
+              await saveCookieAuth(accountName, opts.authToken, opts.ct0, opts.dataDir);
               console.log(`X cookies saved as "${accountName}".`);
             } else {
               // OAuth 2.0 PKCE flow — requires X_CLIENT_ID

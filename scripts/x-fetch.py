@@ -138,11 +138,6 @@ def _out(ok: bool, data: Any, error_msg: Optional[str] = None) -> None:
 
 AUTH_TOKEN = os.environ.get("X_AUTH_TOKEN", "")
 CT0 = os.environ.get("X_CT0", "")
-# Optional: additional cookies required by v1.1 REST endpoints (follow/unfollow).
-# X's v1.1 friendships/create and friendships/destroy require a fuller cookie set
-# beyond auth_token+ct0. Set X_KDT and X_ATT when available to enable cookie-based follow.
-KDT = os.environ.get("X_KDT", "")
-ATT = os.environ.get("X_ATT", "")
 
 BEARER = (
     "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
@@ -1071,27 +1066,12 @@ def cmd_unretweet(tweet_id: str) -> None:
 def _v1_post(path: str, form_data: str) -> None:
     """POST to api.twitter.com/1.1/* with cookie auth (form-urlencoded).
 
-    NOTE: The host must be api.twitter.com (NOT x.com/i/1.1).
-    x.com/i/1.1 rejects cookie-only auth with 401; api.twitter.com accepts
-    the same cookie set and returns proper application-level errors.
-
-    When X_KDT and X_ATT env vars are present, they are appended to the cookie
-    string (collected from the browser network capture). auth_token+ct0 alone
-    may also work but kdt+att improve coverage.
+    NOTE: Use api.twitter.com, NOT x.com/i/1.1.
+    x.com/i/1.1 rejects cookie-only clients with 401; api.twitter.com accepts
+    auth_token + ct0 and returns proper application-level errors.
     """
     url = f"https://api.twitter.com/1.1/{path}"
-    # Build v1.1-specific cookie: base auth_token+ct0, plus kdt+att when available
-    cookie_parts = [f"auth_token={AUTH_TOKEN}", f"ct0={CT0}"]
-    if KDT:
-        cookie_parts.append(f"kdt={KDT}")
-    if ATT:
-        cookie_parts.append(f"att={ATT}")
-    v1_cookie = "; ".join(cookie_parts)
-    headers = {
-        **_headers(),
-        "content-type": "application/x-www-form-urlencoded",
-        "cookie": v1_cookie,
-    }
+    headers = {**_headers(), "content-type": "application/x-www-form-urlencoded"}
     resp = _retry_on_tls(
         lambda: _get_session().post(url, headers=headers, data=form_data, timeout=20)
     )
