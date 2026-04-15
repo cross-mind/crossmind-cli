@@ -247,9 +247,11 @@ export async function followUser(
   // NOTE: v1.1 friendships/create requires the full browser cookie set.
   // With only auth_token + ct0, the bridge returns 401 and we fall through to OAuth.
   // Each OAuth follow costs 3 API calls: users/me + users/by/username + users/{id}/following.
+  // When kdt+att are also stored (from extract-cookie or auth login x --kdt --att),
+  // the bridge cookie set is sufficient for v1.1 and no OAuth fallback is needed.
   if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
     try {
-      await bridgeFollow(username, creds as { authToken: string; ct0: string });
+      await bridgeFollow(username, creds as { authToken: string; ct0: string; kdt?: string; att?: string });
       return { success: true, message: `following:@${username} [auth:cookie]` };
     } catch {
       // Cookie-only insufficient for v1.1 (needs full browser cookie set); fall through to OAuth v2
@@ -467,9 +469,11 @@ export async function unfollowUser(
   // Try cookie auth first (v1.1 REST via x-fetch.py bridge).
   // NOTE: v1.1 friendships/destroy requires the full browser cookie set.
   // With only auth_token + ct0, falls through to OAuth (3 API calls).
+  // When kdt+att are also stored (from extract-cookie or auth login x --kdt --att),
+  // the bridge cookie set is sufficient for v1.1 and no OAuth fallback is needed.
   if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
     try {
-      await bridgeUnfollow(username, creds as { authToken: string; ct0: string });
+      await bridgeUnfollow(username, creds as { authToken: string; ct0: string; kdt?: string; att?: string });
       return { success: true, message: `unfollowed:@${username} [auth:cookie]` };
     } catch {
       // Cookie-only insufficient for v1.1; fall through to OAuth v2

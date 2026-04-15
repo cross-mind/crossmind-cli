@@ -90,13 +90,17 @@ export async function saveCookieAuth(
   accountName: string,
   authToken: string,
   ct0: string,
-  dataDir?: string
+  dataDir?: string,
+  kdt?: string,
+  att?: string,
 ): Promise<void> {
   await saveCredential({
     platform: 'x',
     name: accountName,
     authToken,
     ct0,
+    ...(kdt ? { kdt } : {}),
+    ...(att ? { att } : {}),
   }, dataDir);
 }
 
@@ -120,6 +124,8 @@ export async function saveBearerToken(
  * Env var overrides:
  *   X_AUTH_TOKEN   → authToken (cookie)
  *   X_CT0          → ct0 (cookie CSRF)
+ *   X_KDT          → kdt (optional, improves v1.1 follow/unfollow coverage)
+ *   X_ATT          → att (optional, improves v1.1 follow/unfollow coverage)
  *   X_ACCESS_TOKEN → accessToken (OAuth PKCE user token)
  *
  * This means CrossMind-injected OAuth tokens are picked up automatically
@@ -128,13 +134,15 @@ export async function saveBearerToken(
 export async function loadXCredentials(
   account?: string,
   dataDir?: string
-): Promise<{ authToken?: string; ct0?: string; accessToken?: string; bearerToken?: string } | null> {
+): Promise<{ authToken?: string; ct0?: string; kdt?: string; att?: string; accessToken?: string; bearerToken?: string } | null> {
   const name = await resolveAccount('x', account, dataDir);
   const cred = await loadCredential('x', name, dataDir);
 
   const merged = {
     authToken:   cred?.authToken   ?? process.env['X_AUTH_TOKEN'],
     ct0:         cred?.ct0         ?? process.env['X_CT0'],
+    kdt:         (cred as any)?.kdt ?? process.env['X_KDT'],
+    att:         (cred as any)?.att ?? process.env['X_ATT'],
     accessToken: cred?.accessToken ?? process.env['X_ACCESS_TOKEN'],
     bearerToken: cred?.bearerToken,
   };

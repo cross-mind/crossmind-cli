@@ -59,7 +59,7 @@ export async function isCookieClientAvailable(): Promise<boolean> {
 
 /** Run x-fetch.py with cookie credentials injected via env. */
 async function runFetch<T>(
-  creds: { authToken: string; ct0: string },
+  creds: { authToken: string; ct0: string; kdt?: string; att?: string },
   args: string[]
 ): Promise<T> {
   const python = await resolvePython();
@@ -76,6 +76,8 @@ async function runFetch<T>(
     ...process.env,
     X_AUTH_TOKEN: creds.authToken,
     X_CT0: creds.ct0,
+    ...(creds.kdt ? { X_KDT: creds.kdt } : {}),
+    ...(creds.att ? { X_ATT: creds.att } : {}),
   };
 
   let stdout: string;
@@ -350,14 +352,14 @@ export async function bridgeUnretweet(
 }
 
 export async function bridgeFollow(
-  username: string, creds: { authToken: string; ct0: string }
+  username: string, creds: { authToken: string; ct0: string; kdt?: string; att?: string }
 ): Promise<void> {
   const result = await runFetch<CliResponse<unknown>>(creds, ['follow', username]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Follow failed');
 }
 
 export async function bridgeUnfollow(
-  username: string, creds: { authToken: string; ct0: string }
+  username: string, creds: { authToken: string; ct0: string; kdt?: string; att?: string }
 ): Promise<void> {
   const result = await runFetch<CliResponse<unknown>>(creds, ['unfollow', username]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Unfollow failed');
