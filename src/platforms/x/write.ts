@@ -13,7 +13,7 @@ import { xRequest } from '../../http/x-client.js';
 import { loadXCredentials } from '../../auth/x.js';
 import { writeDelay } from '../../http/rate-limiter.js';
 import { AuthError } from '../../http/client.js';
-import { checkWriteDuplicate, recordWrite } from '../../http/write-history.js';
+import { checkWriteDuplicate, recordWrite, warnForceOverride } from '../../http/write-history.js';
 import {
   isCookieClientAvailable,
   bridgeReply,
@@ -116,6 +116,8 @@ export async function postTweet(
   if (!force) {
     const dup = await checkWriteDuplicate('x', 'tweet', text, undefined, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
+  } else {
+    warnForceOverride('tweet');
   }
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
@@ -123,11 +125,11 @@ export async function postTweet(
   // Prefer cookie auth (GraphQL, no API tier restrictions) when available
   if (!mediaIds?.length && creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
     const result = await bridgePost(text, creds as { authToken: string; ct0: string });
-    await recordWrite('x', 'tweet', text, undefined, dataDir);
+    await recordWrite('x', 'tweet', text, undefined, dataDir, undefined, !!force);
     return {
       success: true,
       id: result.id,
-      message: `posted:${result.id} text:${text.slice(0, 50)}${text.length > 50 ? '...' : ''} [auth:cookie]`,
+      message: `posted:${result.id} text:${text.slice(0, 50)}${text.length > 50 ? '...' : ''} [auth:cookie]${force ? ' [FORCED]' : ''}`,
     };
   }
 
@@ -141,11 +143,11 @@ export async function postTweet(
     { method: 'POST', creds, body }
   );
 
-  await recordWrite('x', 'tweet', text, undefined, dataDir);
+  await recordWrite('x', 'tweet', text, undefined, dataDir, undefined, !!force);
   return {
     success: true,
     id: data.data.id,
-    message: `posted:${data.data.id} text:${text.slice(0, 50)}${text.length > 50 ? '...' : ''}${mediaIds?.length ? ` media:${mediaIds.length}` : ''} [auth:oauth]`,
+    message: `posted:${data.data.id} text:${text.slice(0, 50)}${text.length > 50 ? '...' : ''}${mediaIds?.length ? ` media:${mediaIds.length}` : ''} [auth:oauth]${force ? ' [FORCED]' : ''}`,
   };
 }
 
@@ -167,6 +169,8 @@ export async function replyToTweet(
   if (!force) {
     const dup = await checkWriteDuplicate('x', 'reply', text, tweetId, dataDir, authorHandle);
     if (dup.blocked) throw new Error(dup.reason);
+  } else {
+    warnForceOverride('reply', authorHandle ?? tweetId);
   }
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
@@ -174,11 +178,11 @@ export async function replyToTweet(
   // Prefer cookie auth (GraphQL, no API tier restrictions) when available
   if (!mediaIds?.length && creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
     const result = await bridgeReply(tweetId, text, creds as { authToken: string; ct0: string });
-    await recordWrite('x', 'reply', text, tweetId, dataDir, authorHandle);
+    await recordWrite('x', 'reply', text, tweetId, dataDir, authorHandle, !!force);
     return {
       success: true,
       id: result.id,
-      message: `replied:${result.id} to:${tweetId}${authorHandle ? ` author:@${authorHandle}` : ''} [auth:cookie]`,
+      message: `replied:${result.id} to:${tweetId}${authorHandle ? ` author:@${authorHandle}` : ''} [auth:cookie]${force ? ' [FORCED]' : ''}`,
     };
   }
 
@@ -190,11 +194,11 @@ export async function replyToTweet(
     '/2/tweets',
     { method: 'POST', creds, body }
   );
-  await recordWrite('x', 'reply', text, tweetId, dataDir, authorHandle);
+  await recordWrite('x', 'reply', text, tweetId, dataDir, authorHandle, !!force);
   return {
     success: true,
     id: data.data.id,
-    message: `replied:${data.data.id} to:${tweetId}${authorHandle ? ` author:@${authorHandle}` : ''}${mediaIds?.length ? ` media:${mediaIds.length}` : ''} [auth:oauth]`,
+    message: `replied:${data.data.id} to:${tweetId}${authorHandle ? ` author:@${authorHandle}` : ''}${mediaIds?.length ? ` media:${mediaIds.length}` : ''} [auth:oauth]${force ? ' [FORCED]' : ''}`,
   };
 }
 
@@ -280,6 +284,8 @@ export async function sendDM(
   if (!force) {
     const dup = await checkWriteDuplicate('x', 'dm', text, username, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
+  } else {
+    warnForceOverride('dm', `@${username}`);
   }
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
@@ -321,11 +327,11 @@ export async function sendDM(
     throw err;
   }
 
-  await recordWrite('x', 'dm', text, username, dataDir);
+  await recordWrite('x', 'dm', text, username, dataDir, undefined, !!force);
   return {
     success: true,
     id: data.data.dm_conversation_id,
-    message: `dm_sent to:@${username} text:${text.slice(0, 50)} [auth:oauth]`,
+    message: `dm_sent to:@${username} text:${text.slice(0, 50)} [auth:oauth]${force ? ' [FORCED]' : ''}`,
   };
 }
 

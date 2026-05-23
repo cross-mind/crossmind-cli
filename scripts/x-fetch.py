@@ -720,13 +720,30 @@ def cmd_followers(username: str, count: int = 20) -> None:
         _out(False, None, f"User not found: {username}")
         return
 
-    variables = {"userId": user_id, "count": count, "includePromotedContent": False}
-    data = _gql_get("Followers", variables)
-    instructions = _extract_instructions(
-        data, ["data", "user", "result", "timeline", "timeline", "instructions"]
-    )
-    users = _users_from_instructions(instructions)
-    _out(True, users)
+    all_users: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+    cursor: Optional[str] = None
+    page_size = min(count, 50)  # X caps per-page at ~50 for Followers
+
+    while len(all_users) < count:
+        variables: Dict[str, Any] = {"userId": user_id, "count": page_size, "includePromotedContent": False}
+        if cursor:
+            variables["cursor"] = cursor
+        data = _gql_get("Followers", variables)
+        instructions = _extract_instructions(
+            data, ["data", "user", "result", "timeline", "timeline", "instructions"]
+        )
+        page_users = _users_from_instructions(instructions)
+        new_users = [u for u in page_users if u["id"] not in seen_ids]
+        for u in new_users:
+            seen_ids.add(u["id"])
+        all_users.extend(new_users)
+        next_cursor = _bottom_cursor_from_instructions(instructions)
+        if not new_users or not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+
+    _out(True, all_users[:count])
 
 def cmd_following(username: str, count: int = 20) -> None:
     user_vars = {"screen_name": username, "withSafetyModeUserFields": True}
@@ -736,13 +753,30 @@ def cmd_following(username: str, count: int = 20) -> None:
         _out(False, None, f"User not found: {username}")
         return
 
-    variables = {"userId": user_id, "count": count, "includePromotedContent": False}
-    data = _gql_get("Following", variables)
-    instructions = _extract_instructions(
-        data, ["data", "user", "result", "timeline", "timeline", "instructions"]
-    )
-    users = _users_from_instructions(instructions)
-    _out(True, users)
+    all_users: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+    cursor: Optional[str] = None
+    page_size = min(count, 50)  # X caps per-page at ~50 for Following
+
+    while len(all_users) < count:
+        variables: Dict[str, Any] = {"userId": user_id, "count": page_size, "includePromotedContent": False}
+        if cursor:
+            variables["cursor"] = cursor
+        data = _gql_get("Following", variables)
+        instructions = _extract_instructions(
+            data, ["data", "user", "result", "timeline", "timeline", "instructions"]
+        )
+        page_users = _users_from_instructions(instructions)
+        new_users = [u for u in page_users if u["id"] not in seen_ids]
+        for u in new_users:
+            seen_ids.add(u["id"])
+        all_users.extend(new_users)
+        next_cursor = _bottom_cursor_from_instructions(instructions)
+        if not new_users or not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+
+    _out(True, all_users[:count])
 
 def cmd_bookmarks(count: int = 20) -> None:
     variables = {

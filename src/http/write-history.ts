@@ -13,12 +13,13 @@ import { getDataDir } from '../auth/store.js';
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface WriteEntry {
-  platform: string;   // x, reddit, bsky, linkedin
-  action: string;     // tweet, reply, dm, comment, post, ...
-  text: string;       // the content that was written
-  target?: string;    // optional context (tweet_id, username, subreddit)
-  author?: string;    // for replies: the tweet author's handle (e.g. "ardent__dev")
-  ts: number;         // Unix timestamp ms
+  platform: string;    // x, reddit, bsky, linkedin
+  action: string;      // tweet, reply, dm, comment, post, ...
+  text: string;        // the content that was written
+  target?: string;     // optional context (tweet_id, username, subreddit)
+  author?: string;     // for replies: the tweet author's handle (e.g. "ardent__dev")
+  ts: number;          // Unix timestamp ms
+  forcedAt?: number;   // set when --force was used to bypass dedup (audit trail)
 }
 
 export interface DedupConfig {
@@ -181,9 +182,16 @@ export async function checkWriteDuplicate(
     );
     if (priorReply) {
       const ageHours = ((now - priorReply.ts) / 3600_000).toFixed(1);
+      const sentAt = new Date(priorReply.ts).toISOString();
       return {
         blocked: true,
-        reason: `Already replied to @${authorHandle} ${ageHours}h ago (${config.replyAuthorWindowHours}h cooldown per author). Use --force to override.`,
+        reason: [
+          `BLOCKED: Already replied to @${authorHandle} ${ageHours}h ago.`,
+          `Sent at: ${sentAt}`,
+          `Previous reply: "${priorReply.text.slice(0, 120)}${priorReply.text.length > 120 ? '...' : ''}"`,
+          `Cooldown: ${config.replyAuthorWindowHours}h per author (${Math.ceil(config.replyAuthorWindowHours - parseFloat(ageHours))}h remaining).`,
+          `DO NOT retry with --force. This block prevents harassment detection. Skip this target.`,
+        ].join('\n'),
         similarTo: priorReply,
       };
     }
@@ -202,9 +210,16 @@ export async function checkWriteDuplicate(
     );
     if (priorDm) {
       const ageHours = ((now - priorDm.ts) / 3600_000).toFixed(1);
+      const sentAt = new Date(priorDm.ts).toISOString();
       return {
         blocked: true,
-        reason: `Already DM'd @${target} ${ageHours}h ago (${config.dmWindowHours}h cooldown). Use --force to override.\nPrevious message: ${priorDm.text}`,
+        reason: [
+          `BLOCKED: Already DM'd @${target} ${ageHours}h ago.`,
+          `Sent at: ${sentAt}`,
+          `Previous message: "${priorDm.text.slice(0, 120)}${priorDm.text.length > 120 ? '...' : ''}"`,
+          `Cooldown: ${config.dmWindowHours}h per user (${Math.ceil(config.dmWindowHours - parseFloat(ageHours))}h remaining).`,
+          `DO NOT retry with --force unless the user has replied since that DM. Check dm-conversation first.`,
+        ].join('\n'),
         similarTo: priorDm,
       };
     }
@@ -233,9 +248,16 @@ export async function checkWriteDuplicate(
 
     if (similarity >= threshold) {
       const ageHours = ((Date.now() - entry.ts) / 3600_000).toFixed(1);
+      const sentAt = new Date(entry.ts).toISOString();
       return {
         blocked: true,
-        reason: `Similar content written ${ageHours}h ago (${(similarity * 100).toFixed(0)}% match). Use --force to override.`,
+        reason: [
+          `BLOCKED: Near-duplicate content already sent ${ageHours}h ago (${(similarity * 100).toFixed(0)}% match).`,
+          `Sent at: ${sentAt}`,
+          `Previous content: "${entry.text.slice(0, 120)}${entry.text.length > 120 ? '...' : ''}"`,
+          `Write different content or wait ${config.windowHours}h before reusing similar text.`,
+          `DO NOT retry with --force. Repetitive content triggers spam detection.`,
+        ].join('\n'),
         similarTo: entry,
       };
     }
@@ -249,7 +271,8 @@ export async function checkWriteDuplicate(
 /**
  * Record a successful write operation. Call after the write succeeds.
  *
- * @param author - For replies: the tweet author's handle (enables per-author dedup).
+ * @param author    - For replies: the tweet author's handle (enables per-author dedup).
+ * @param forceUsed - Set to true when --force was used to bypass dedup (audit trail).
  */
 export async function recordWrite(
   platform: string,
@@ -258,6 +281,7 @@ export async function recordWrite(
   target?: string,
   dataDir?: string,
   author?: string,
+  forceUsed?: boolean,
 ): Promise<void> {
   const config = await loadDedupConfig(dataDir);
   if (!config.enabled) return;
@@ -273,6 +297,24 @@ export async function recordWrite(
   if (author) {
     entry.author = author.replace(/^@/, '').toLowerCase();
   }
+  if (forceUsed) {
+    entry.forcedAt = Date.now();
+  }
   entries.push(entry);
   await saveHistory(entries, dataDir);
+}
+
+// ── Force audit ───────────────────────────────────────────────────────────────
+
+/**
+ * Print a prominent stderr warning when --force is used.
+ * Call this in write commands whenever force=true, BEFORE the actual write.
+ */
+export function warnForceOverride(action: string, target?: string): void {
+  const label = target ? ` to ${target}` : '';
+  process.stderr.write(
+    `\n⚠️  FORCE OVERRIDE: dedup check bypassed for ${action}${label}.\n` +
+    `   This write will be recorded with forcedAt timestamp for audit.\n` +
+    `   In automated tasks, --force should NEVER be used. It defeats spam protection.\n\n`
+  );
 }
