@@ -374,8 +374,9 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('--media <paths...>', 'Attach image(s) (path or URL, multiple allowed)')
+    .option('--author <handle>', 'Tweet author username (enables per-author 14-day reply cooldown)')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (tweetId: string, text: string, opts: { account?: string; dataDir?: string; media?: string[]; force?: boolean }) => {
+    .action(async (tweetId: string, text: string, opts: { account?: string; dataDir?: string; media?: string[]; author?: string; force?: boolean }) => {
       try {
         let mediaIds: string[] | undefined;
         if (opts.media?.length) {
@@ -385,7 +386,7 @@ Auth requirements:
             mediaIds.push(id);
           }
         }
-        const result = await replyToTweet(text, tweetId, opts.account, opts.dataDir, mediaIds, !!opts.force);
+        const result = await replyToTweet(text, tweetId, opts.account, opts.dataDir, mediaIds, !!opts.force, opts.author);
         console.log(result.message);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);

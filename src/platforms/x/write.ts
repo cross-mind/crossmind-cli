@@ -149,17 +149,23 @@ export async function postTweet(
   };
 }
 
-/** Reply to a tweet */
+/** Reply to a tweet
+ *
+ * @param authorHandle - The tweet author's username (e.g. "ardent__dev"). When provided,
+ *   enables per-author dedup so the same person is never replied to twice within
+ *   the configured replyAuthorWindowHours (default 14 days), even across different threads.
+ */
 export async function replyToTweet(
   text: string,
   tweetId: string,
   account?: string,
   dataDir?: string,
   mediaIds?: string[],
-  force?: boolean
+  force?: boolean,
+  authorHandle?: string,
 ): Promise<WriteResult> {
   if (!force) {
-    const dup = await checkWriteDuplicate('x', 'reply', text, tweetId, dataDir);
+    const dup = await checkWriteDuplicate('x', 'reply', text, tweetId, dataDir, authorHandle);
     if (dup.blocked) throw new Error(dup.reason);
   }
   const creds = await getXCreds(account, dataDir);
@@ -168,11 +174,11 @@ export async function replyToTweet(
   // Prefer cookie auth (GraphQL, no API tier restrictions) when available
   if (!mediaIds?.length && creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
     const result = await bridgeReply(tweetId, text, creds as { authToken: string; ct0: string });
-    await recordWrite('x', 'reply', text, tweetId, dataDir);
+    await recordWrite('x', 'reply', text, tweetId, dataDir, authorHandle);
     return {
       success: true,
       id: result.id,
-      message: `replied:${result.id} to:${tweetId} [auth:cookie]`,
+      message: `replied:${result.id} to:${tweetId}${authorHandle ? ` author:@${authorHandle}` : ''} [auth:cookie]`,
     };
   }
 
@@ -184,11 +190,11 @@ export async function replyToTweet(
     '/2/tweets',
     { method: 'POST', creds, body }
   );
-  await recordWrite('x', 'reply', text, tweetId, dataDir);
+  await recordWrite('x', 'reply', text, tweetId, dataDir, authorHandle);
   return {
     success: true,
     id: data.data.id,
-    message: `replied:${data.data.id} to:${tweetId}${mediaIds?.length ? ` media:${mediaIds.length}` : ''} [auth:oauth]`,
+    message: `replied:${data.data.id} to:${tweetId}${authorHandle ? ` author:@${authorHandle}` : ''}${mediaIds?.length ? ` media:${mediaIds.length}` : ''} [auth:oauth]`,
   };
 }
 
