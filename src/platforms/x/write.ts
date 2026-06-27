@@ -13,7 +13,7 @@ import { xRequest } from '../../http/x-client.js';
 import { loadXCredentials } from '../../auth/x.js';
 import { writeDelay } from '../../http/rate-limiter.js';
 import { AuthError } from '../../http/client.js';
-import { checkWriteDuplicate, recordWrite, warnForceOverride } from '../../http/write-history.js';
+import { checkWriteDuplicate, recordWrite, warnForceOverride, checkForceDMGate } from '../../http/write-history.js';
 import {
   isCookieClientAvailable,
   bridgeReply,
@@ -285,6 +285,8 @@ export async function sendDM(
     const dup = await checkWriteDuplicate('x', 'dm', text, username, dataDir);
     if (dup.blocked) throw new Error(dup.reason);
   } else {
+    const gate = await checkForceDMGate('x', username, dataDir);
+    if (!gate.allowed) throw new Error(gate.reason);
     warnForceOverride('dm', `@${username}`);
   }
   const creds = await getXCreds(account, dataDir);

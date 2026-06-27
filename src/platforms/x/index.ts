@@ -17,6 +17,7 @@ import {
   uploadMedia,
 } from './write.js';
 import { printOutput } from '../../output/formatter.js';
+import { recordDMRead } from '../../http/write-history.js';
 
 const TWEET_TEMPLATE = '{rank}. @{author} likes:{likes} rt:{retweets} replies:{replies} — {text} {url}';
 const USER_TEMPLATE = '{rank}. @{username} ({name}) followers:{followers} following:{following} tweets:{tweets} — {bio}';
@@ -294,6 +295,8 @@ Auth requirements:
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
       try {
         const items = await getDMConversation(username, limit, opts.account, opts.dataDir);
+        // Record the read so a subsequent `dm --force` to this user is unlocked (read gate).
+        await recordDMRead('x', username, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], DM_CONVO_TEMPLATE, `x/dm/${username}`, start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);

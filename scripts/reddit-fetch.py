@@ -69,7 +69,7 @@ def _get_session() -> cffi_requests.Session:
     global _session
     if _session is None:
         proxy = os.environ.get("REDDIT_PROXY")
-        kwargs: Dict[str, Any] = {"impersonate": "safari"}
+        kwargs: Dict[str, Any] = {}
         if proxy:
             kwargs["proxies"] = {"http": proxy, "https": proxy}
         _session = cffi_requests.Session(**kwargs)

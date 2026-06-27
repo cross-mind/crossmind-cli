@@ -318,3 +318,99 @@ export function warnForceOverride(action: string, target?: string): void {
     `   In automated tasks, --force should NEVER be used. It defeats spam protection.\n\n`
   );
 }
+
+// ── Force-DM safety gate ────────────────────────────────────────────────────────
+//
+// `--force` on a DM bypasses the per-user 7-day cooldown. Its ONLY legitimate use
+// is a follow-up to a user who has REPLIED since our last DM. Consecutive force DMs
+// to non-responders is the pattern that got @CestIvan banned (April 2026).
+//
+// Three code-enforced floors (NOT prompt rules) before a force DM is allowed:
+//   1. Read gate   — a `dm-read` record (from `x dm-conversation <user>`) for this
+//                    user must exist within DM_READ_WINDOW_MINUTES.
+//   2. Risk warning — warnForceOverride still fires (handled by caller).
+//   3. Daily quota — at most FORCE_DM_DAILY_LIMIT force DM per local calendar day.
+
+const DM_READ_WINDOW_MINUTES = 30;   // dm-conversation must have been read this recently
+const FORCE_DM_DAILY_LIMIT = 1;      // max force DMs per local calendar day
+
+/**
+ * Record that the DM conversation with a user was read (via `x dm-conversation`).
+ * This is the prerequisite "read" record that unlocks a subsequent force DM.
+ */
+export async function recordDMRead(
+  platform: string,
+  target: string,
+  dataDir?: string,
+): Promise<void> {
+  const entries = await loadHistory(dataDir);
+  entries.push({
+    platform,
+    action: 'dm-read',
+    text: '',
+    target: target.replace(/^@/, ''),
+    ts: Date.now(),
+  });
+  await saveHistory(entries, dataDir);
+}
+
+export interface ForceDMGateResult {
+  allowed: boolean;
+  reason?: string;
+}
+
+/**
+ * Gate a force DM. Call BEFORE sending when force=true.
+ * Returns { allowed:false, reason } when any floor is violated.
+ */
+export async function checkForceDMGate(
+  platform: string,
+  target: string,
+  dataDir?: string,
+): Promise<ForceDMGateResult> {
+  const entries = await loadHistory(dataDir);
+  const now = Date.now();
+  const targetNorm = target.replace(/^@/, '').toLowerCase();
+
+  // ── Gate 1: read gate ─────────────────────────────────────────────────────
+  const readWindowMs = DM_READ_WINDOW_MINUTES * 60_000;
+  const recentRead = entries.find(
+    (e) =>
+      e.platform === platform &&
+      e.action === 'dm-read' &&
+      e.target?.replace(/^@/, '').toLowerCase() === targetNorm &&
+      e.ts >= now - readWindowMs,
+  );
+  if (!recentRead) {
+    return {
+      allowed: false,
+      reason: [
+        `FORCE BLOCKED: You must read @${targetNorm}'s DM conversation before forcing a DM.`,
+        `Run \`crossmind ${platform} dm-conversation ${targetNorm}\` first, confirm they replied since your last message, then retry within ${DM_READ_WINDOW_MINUTES} minutes.`,
+        `--force exists ONLY for following up after the user replied. Forcing a DM to a non-responder is the pattern that got an account banned. Do not retry blindly.`,
+      ].join('\n'),
+    };
+  }
+
+  // ── Gate 3: daily quota ───────────────────────────────────────────────────
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const dayStart = startOfDay.getTime();
+  const forcedToday = entries.filter(
+    (e) => e.platform === platform && e.action === 'dm' && e.forcedAt && e.forcedAt >= dayStart,
+  );
+  if (forcedToday.length >= FORCE_DM_DAILY_LIMIT) {
+    const last = forcedToday[forcedToday.length - 1];
+    const lastAt = last.forcedAt ? new Date(last.forcedAt).toISOString() : 'earlier today';
+    return {
+      allowed: false,
+      reason: [
+        `FORCE BLOCKED: Daily force-DM quota reached (${FORCE_DM_DAILY_LIMIT}/day).`,
+        `Last force DM: ${lastAt}${last.target ? ` to @${last.target}` : ''}.`,
+        `Only one forced DM is allowed per day to prevent the consecutive-force pattern that triggers spam bans. Wait until tomorrow.`,
+      ].join('\n'),
+    };
+  }
+
+  return { allowed: true };
+}
