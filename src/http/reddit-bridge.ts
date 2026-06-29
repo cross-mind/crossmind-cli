@@ -20,6 +20,7 @@ import { access, constants } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RedditPost, RedditComment, RedditUserProfile, RedditPostDetail } from '../platforms/reddit/read.js';
+import { makeUser } from '../types/identity.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -70,6 +71,7 @@ interface CliPost {
   id: string;
   title: string;
   author: string;
+  author_fullname?: string;
   subreddit: string;
   score: number;
   num_comments: number;
@@ -85,6 +87,7 @@ interface CliPost {
 interface CliComment {
   id: string;
   author: string;
+  author_fullname?: string;
   body: string;
   score: number;
   subreddit: string;
@@ -93,10 +96,14 @@ interface CliComment {
 
 interface CliUser {
   name: string;
+  id?: string;
+  icon_img?: string;
+  snoovatar_img?: string;
   link_karma: number;
   comment_karma: number;
   created_utc: number;
   is_mod?: boolean;
+  subreddit?: { public_description?: string; subscribers?: number; title?: string };
 }
 
 interface CliPostDetail {
@@ -117,7 +124,7 @@ function mapCliPost(p: CliPost, rank: number, full?: boolean): RedditPost {
     rank,
     id: String(p.id ?? ''),
     title: String(p.title ?? '').slice(0, 150),
-    author: String(p.author ?? ''),
+    author: makeUser({ id: p.author_fullname ?? null, username: String(p.author ?? '') || null }),
     subreddit: String(p.subreddit ?? ''),
     score: Number(p.score ?? 0),
     comments: Number(p.num_comments ?? 0),
@@ -137,7 +144,7 @@ function mapCliComment(c: CliComment, rank: number, full?: boolean): RedditComme
   return {
     rank,
     id: String(c.id ?? ''),
-    author: String(c.author ?? ''),
+    author: makeUser({ id: c.author_fullname ?? null, username: String(c.author ?? '') || null }),
     body: String(c.body ?? '').replace(/\n/g, ' ').slice(0, full ? 5000 : 200),
     score: Number(c.score ?? 0),
     subreddit: String(c.subreddit ?? ''),
@@ -239,14 +246,24 @@ export async function bridgeUser(
   const result = await runFetch<CliResponse<CliUser>>(creds, ['user', username]);
   if (!result.ok) throw new Error(result.error?.message ?? `User ${username} fetch failed`);
   const u = result.data;
+  const name = String(u.name ?? username);
+  const sub = u.subreddit ?? {};
   return {
+    ...makeUser({
+      id: u.id ? `t2_${u.id}` : null,
+      username: name,
+      avatar_url: String(u.icon_img || u.snoovatar_img || '') || null,
+      profile_url: `https://reddit.com/u/${name}`,
+      bio: sub.public_description ? String(sub.public_description).slice(0, 300).replace(/\n/g, ' ') : null,
+      followers: sub.subscribers != null ? Number(sub.subscribers) : null,
+      verified: false,
+    }),
     rank: 1,
-    username: String(u.name ?? username),
     karma_post: Number(u.link_karma ?? 0),
     karma_comment: Number(u.comment_karma ?? 0),
     created_utc: Number(u.created_utc ?? 0),
     is_mod: Boolean(u.is_mod ?? false),
-    url: `https://reddit.com/u/${username}`,
+    url: `https://reddit.com/u/${name}`,
   };
 }
 
@@ -327,13 +344,21 @@ export async function bridgeComment(
   parentId: string,
   text: string,
   creds: RedditCookieCreds
-): Promise<{ id: string }> {
+): Promise<{ id: string; subreddit?: string; link_id?: string; permalink?: string }> {
   const result = await runFetch<CliResponse<Record<string, unknown>>>(
     creds, ['comment', parentId, text]
   );
   if (!result.ok) throw new Error(result.error?.message ?? 'Comment failed');
-  const id = extractJsonId(result.data as Record<string, unknown> | null, 'comment');
-  return { id };
+  const data = result.data as Record<string, unknown> | null;
+  const id = extractJsonId(data, 'comment');
+  // The new comment thing carries subreddit/link_id/permalink for free.
+  const thing = (data as { json?: { data?: { things?: Array<{ data?: Record<string, unknown> }> } } })?.json?.data?.things?.[0]?.data;
+  return {
+    id,
+    subreddit: thing?.['subreddit'] ? String(thing['subreddit']) : undefined,
+    link_id: thing?.['link_id'] ? String(thing['link_id']) : undefined,
+    permalink: thing?.['permalink'] ? String(thing['permalink']) : undefined,
+  };
 }
 
 export async function bridgeVote(

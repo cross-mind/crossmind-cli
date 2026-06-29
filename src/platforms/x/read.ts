@@ -19,6 +19,7 @@ import {
   bridgeFeed,
   bridgeUserTimeline,
   bridgeUserProfile,
+  bridgeUserById,
   bridgeTweet,
   bridgeFollowers,
   bridgeFollowing,
@@ -27,12 +28,14 @@ import {
   bridgeListTweets,
 } from '../../http/x-bridge.js';
 import { AuthError } from '../../http/client.js';
+import type { UnifiedUser } from '../../types/identity.js';
+import { makeUser } from '../../types/identity.js';
 
 export interface XTweet {
   rank: number;
   id: string;
   text: string;
-  author: string;
+  author: UnifiedUser;
   likes: number;
   retweets: number;
   replies: number;
@@ -47,16 +50,12 @@ export interface XTweetAnalytics extends XTweet {
   url_link_clicks: number;
 }
 
-export interface XUser {
+export interface XUser extends UnifiedUser {
   rank: number;
-  username: string;
-  name: string;
-  followers: number;
+  /** Following count (X-specific extra; null elsewhere). */
   following: number;
+  /** Total tweet count (X-specific extra). */
   tweets: number;
-  bio: string;
-  verified: string;
-  url: string;
 }
 
 function buildTweetUrl(username: string, tweetId: string): string {
@@ -65,15 +64,32 @@ function buildTweetUrl(username: string, tweetId: string): string {
 
 // ── v2 REST helpers ────────────────────────────────────────────────────────
 
+/** Build a UnifiedUser from a v2 REST user object. */
+function userFromRest(u: Record<string, unknown>): UnifiedUser {
+  const metrics = (u['public_metrics'] as Record<string, number> | null) ?? {};
+  const username = String(u['username'] ?? '');
+  return {
+    id: u['id'] ? String(u['id']) : null,
+    username: username || null,
+    name: u['name'] ? String(u['name']) : null,
+    avatar_url: u['profile_image_url'] ? String(u['profile_image_url']) : null,
+    profile_url: username ? `https://twitter.com/${username}` : null,
+    bio: u['description'] ? String(u['description']).slice(0, 160) : null,
+    followers: metrics['followers_count'] ?? null,
+    verified: u['verified'] === true ? true : (u['verified'] === false ? false : null),
+  };
+}
+
 function mapTweetRest(tweet: Record<string, unknown>, author: Record<string, unknown>, index: number): XTweet {
   const metrics = tweet['public_metrics'] as Record<string, number> | null ?? {};
-  const username = String(author['username'] ?? '');
+  const authorUser = userFromRest(author);
+  const username = authorUser.username ?? '';
   const id = String(tweet['id'] ?? '');
   return {
     rank: index + 1,
     id,
     text: String(tweet['text'] ?? ''),
-    author: username,
+    author: authorUser,
     likes: metrics['like_count'] ?? 0,
     retweets: metrics['retweet_count'] ?? 0,
     replies: metrics['reply_count'] ?? 0,
@@ -111,7 +127,7 @@ export async function searchTweets(
     query,
     max_results: String(Math.min(limit, 100)),
     'tweet.fields': 'created_at,public_metrics,author_id',
-    'user.fields': 'username,name',
+    'user.fields': 'id,username,name,profile_image_url',
     expansions: 'author_id',
   });
 
@@ -182,7 +198,7 @@ export async function getUserProfile(
   }
 
   // v2 REST path
-  const params = 'user.fields=description,public_metrics,verified,entities';
+  const params = 'user.fields=id,description,public_metrics,verified,entities,profile_image_url';
   const data = await xRequest<{ data?: Record<string, unknown> }>(
     `/2/users/by/username/${username}?${params}`,
     { creds: creds ?? undefined }
@@ -190,19 +206,31 @@ export async function getUserProfile(
 
   const u = data.data;
   if (!u) return null;
+  return mapUserRest(u, 1);
+}
 
-  const metrics = u['public_metrics'] as Record<string, number> | null ?? {};
-  return {
-    rank: 1,
-    username: String(u['username'] ?? ''),
-    name: String(u['name'] ?? ''),
-    followers: metrics['followers_count'] ?? 0,
-    following: metrics['following_count'] ?? 0,
-    tweets: metrics['tweet_count'] ?? 0,
-    bio: String(u['description'] ?? '').slice(0, 160),
-    verified: String(u['verified'] ?? false),
-    url: `https://twitter.com/${u['username']}`,
-  };
+/** Resolve a numeric rest_id → profile (P1 bidirectional lookup). */
+export async function getUserById(
+  restId: string,
+  account?: string,
+  dataDir?: string
+): Promise<XUser | null> {
+  const creds = await loadXCredentials(account, dataDir);
+
+  // Cookie auth → x-fetch.py bridge
+  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
+    return bridgeUserById(restId, creds);
+  }
+
+  // v2 REST path
+  const params = 'user.fields=id,description,public_metrics,verified,profile_image_url';
+  const data = await xRequest<{ data?: Record<string, unknown> }>(
+    `/2/users/${restId}?${params}`,
+    { creds: creds ?? undefined }
+  );
+  const u = data.data;
+  if (!u) return null;
+  return mapUserRest(u, 1);
 }
 
 /** Get home timeline (cookie or OAuth required). */
@@ -223,7 +251,7 @@ export async function getHomeTimeline(
     const params = new URLSearchParams({
       max_results: String(Math.min(limit, 100)),
       'tweet.fields': 'created_at,public_metrics,author_id',
-      'user.fields': 'username,name',
+      'user.fields': 'id,username,name,profile_image_url',
       expansions: 'author_id',
     });
 
@@ -258,7 +286,7 @@ export interface XTweetThread {
 export interface XDMEvent {
   rank: number;
   id: string;
-  sender: string;
+  sender: UnifiedUser;
   recipient: string;
   text: string;
   created_at: string;
@@ -279,7 +307,7 @@ export async function getTweet(
   }
 
   // REST v2 fallback: fetch tweet only (no thread traversal without elevated access)
-  const params = 'tweet.fields=created_at,public_metrics,author_id&expansions=author_id&user.fields=username';
+  const params = 'tweet.fields=created_at,public_metrics,author_id&expansions=author_id&user.fields=id,username,name,profile_image_url';
   const data = await xRequest<{
     data: Record<string, unknown>;
     includes?: { users?: Record<string, unknown>[] };
@@ -313,7 +341,7 @@ export async function getFollowers(
   const userId = userResp.data.id;
   const params = new URLSearchParams({
     max_results: String(Math.min(limit, 1000)),
-    'user.fields': 'username,name,public_metrics,description,verified',
+    'user.fields': 'id,username,name,public_metrics,description,verified,profile_image_url',
   });
   const data = await xRequest<{ data?: Record<string, unknown>[] }>(
     `/2/users/${userId}/followers?${params}`,
@@ -342,7 +370,7 @@ export async function getFollowing(
   const userId = userResp.data.id;
   const params = new URLSearchParams({
     max_results: String(Math.min(limit, 1000)),
-    'user.fields': 'username,name,public_metrics,description,verified',
+    'user.fields': 'id,username,name,public_metrics,description,verified,profile_image_url',
   });
   const data = await xRequest<{ data?: Record<string, unknown>[] }>(
     `/2/users/${userId}/following?${params}`,
@@ -407,7 +435,7 @@ export async function getListTweets(
   const params = new URLSearchParams({
     max_results: String(Math.min(limit, 100)),
     'tweet.fields': 'created_at,public_metrics,author_id',
-    'user.fields': 'username,name',
+    'user.fields': 'id,username,name,profile_image_url',
     expansions: 'author_id',
   });
   const data = await xRequest<{
@@ -443,7 +471,7 @@ export async function getLikes(
   const params = new URLSearchParams({
     max_results: String(Math.min(limit, 100)),
     'tweet.fields': 'created_at,public_metrics,author_id',
-    'user.fields': 'username,name',
+    'user.fields': 'id,username,name,profile_image_url',
     expansions: 'author_id',
   });
   const data = await xRequest<{
@@ -521,7 +549,7 @@ export async function getDMList(
       event_types: 'MessageCreate',
       'dm_event.fields': 'sender_id,created_at,text,dm_conversation_id',
       expansions: 'sender_id',
-      'user.fields': 'username',
+      'user.fields': 'id,username,name,profile_image_url',
     });
     if (nextToken) params.set('pagination_token', nextToken);
 
@@ -549,17 +577,20 @@ export async function getDMList(
     nextToken = data.meta?.next_token;
   } while (nextToken && !reachedCutoff && allEvents.length < hardCap);
 
-  const userMap: Record<string, string> = {};
-  for (const u of allUsers) userMap[String(u['id'])] = String(u['username'] ?? '');
+  const userMap: Record<string, UnifiedUser> = {};
+  for (const u of allUsers) userMap[String(u['id'])] = userFromRest(u);
 
-  return allEvents.slice(0, hardCap).map((e, i) => ({
-    rank: i + 1,
-    id: String(e['id'] ?? ''),
-    sender: userMap[String(e['sender_id'])] ?? String(e['sender_id'] ?? ''),
-    recipient: '',
-    text: String(e['text'] ?? ''),
-    created_at: String(e['created_at'] ?? '').slice(0, 16).replace('T', ' '),
-  }));
+  return allEvents.slice(0, hardCap).map((e, i) => {
+    const sid = String(e['sender_id'] ?? '');
+    return {
+      rank: i + 1,
+      id: String(e['id'] ?? ''),
+      sender: userMap[sid] ?? { ...makeUser({}), id: sid || null },
+      recipient: '',
+      text: String(e['text'] ?? ''),
+      created_at: String(e['created_at'] ?? '').slice(0, 16).replace('T', ' '),
+    };
+  });
 }
 
 /** In-process cache for username → user ID lookups (avoids redundant API calls). */
@@ -597,7 +628,7 @@ export async function getDMConversation(
     max_results: String(Math.min(limit, 100)),
     'dm_event.fields': 'sender_id,created_at,text',
     expansions: 'sender_id',
-    'user.fields': 'username',
+    'user.fields': 'id,username,name,profile_image_url',
   });
   const data = await xRequest<{
     data?: Record<string, unknown>[];
@@ -605,17 +636,20 @@ export async function getDMConversation(
   }>(`/2/dm_conversations/with/${participantId}/dm_events?${params}`, { creds });
 
   const users = data.includes?.users ?? [];
-  const userMap: Record<string, string> = {};
-  for (const u of users) userMap[String(u['id'])] = String(u['username'] ?? '');
+  const userMap: Record<string, UnifiedUser> = {};
+  for (const u of users) userMap[String(u['id'])] = userFromRest(u);
 
-  return (data.data ?? []).slice(0, limit).map((e, i) => ({
-    rank: i + 1,
-    id: String(e['id'] ?? ''),
-    sender: userMap[String(e['sender_id'])] ?? String(e['sender_id'] ?? ''),
-    recipient: participantUsername,
-    text: String(e['text'] ?? ''),
-    created_at: String(e['created_at'] ?? '').slice(0, 16).replace('T', ' '),
-  }));
+  return (data.data ?? []).slice(0, limit).map((e, i) => {
+    const sid = String(e['sender_id'] ?? '');
+    return {
+      rank: i + 1,
+      id: String(e['id'] ?? ''),
+      sender: userMap[sid] ?? { ...makeUser({}), id: sid || null },
+      recipient: participantUsername,
+      text: String(e['text'] ?? ''),
+      created_at: String(e['created_at'] ?? '').slice(0, 16).replace('T', ' '),
+    };
+  });
 }
 
 // ── Analytics (requires OAuth for organic_metrics + non_public_metrics) ─────
@@ -706,17 +740,12 @@ export async function getAnalytics(
 // ── REST helpers for user objects ──────────────────────────────────────────
 
 function mapUserRest(u: Record<string, unknown>, index: number): XUser {
+  const base = userFromRest(u);
   const metrics = u['public_metrics'] as Record<string, number> | null ?? {};
-  const username = String(u['username'] ?? '');
   return {
+    ...base,
     rank: index + 1,
-    username,
-    name: String(u['name'] ?? ''),
-    followers: metrics['followers_count'] ?? 0,
     following: metrics['following_count'] ?? 0,
     tweets: metrics['tweet_count'] ?? 0,
-    bio: String(u['description'] ?? '').slice(0, 160),
-    verified: String(u['verified'] ?? false),
-    url: `https://twitter.com/${username}`,
   };
 }

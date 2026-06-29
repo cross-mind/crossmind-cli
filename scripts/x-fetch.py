@@ -167,6 +167,7 @@ QUERY_IDS: Dict[str, str] = {
     "SearchTimeline":           "VhUd6vHVmLBcw0uX-6jMLA",
     "UserTweets":               "q6xj5bs0hapm9309hexA_g",
     "UserByScreenName":         "1VOOyvKkiI3FMmkeDNxM9A",
+    "UserByRestId":             "s1nrasBRwk07iq-K-QKPOw",
     "TweetDetail":              "xd_EMdYvB9hfZsZ6Idri0w",
     "Followers":                "IOh4aS6UdGWGJUYTqliQ7Q",
     "Following":                "zx6e-TLzRkeDO_a7p4b3JQ",
@@ -495,6 +496,17 @@ def _parse_tweet(result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     user_legacy = user_result.get("legacy") or {}
     screen_name = user_core.get("screen_name") or user_legacy.get("screen_name", "")
     author_name = user_core.get("name") or user_legacy.get("name", "")
+    author_id = user_result.get("rest_id", "") or user_core.get("rest_id", "")
+    author_avatar = (user_result.get("avatar") or {})
+    avatar_url = (
+        author_avatar.get("image_url")
+        or user_legacy.get("profile_image_url_https")
+        or user_core.get("profile_image_url_https")
+        or ""
+    )
+    # Strip _normal for full-resolution avatar
+    if avatar_url and "_normal" in avatar_url:
+        avatar_url = avatar_url.replace("_normal", "")
     views = result.get("views") or {}
 
     tweet_id = legacy.get("id_str") or result.get("rest_id") or ""
@@ -505,7 +517,8 @@ def _parse_tweet(result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         "author": {
             "screenName": screen_name,
             "name": author_name,
-            "id": user_result.get("rest_id", ""),
+            "id": author_id,
+            "avatarUrl": avatar_url,
         },
         "metrics": {
             "likes":     legacy.get("favorite_count", 0),
@@ -521,15 +534,28 @@ def _parse_user(result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not result:
         return None
     legacy = result.get("legacy") or {}
+    # X moved screen_name/name into `core` and the avatar into `avatar`;
+    # fall back to legacy locations for older response shapes.
+    core = result.get("core") or {}
+    avatar = result.get("avatar") or {}
+    avatar_url = (
+        avatar.get("image_url")
+        or legacy.get("profile_image_url_https")
+        or core.get("profile_image_url_https")
+        or ""
+    )
+    if avatar_url and "_normal" in avatar_url:
+        avatar_url = avatar_url.replace("_normal", "")
     return {
         "id":          result.get("rest_id", ""),
-        "screenName":  legacy.get("screen_name", ""),
-        "name":        legacy.get("name", ""),
+        "screenName":  core.get("screen_name") or legacy.get("screen_name", ""),
+        "name":        core.get("name") or legacy.get("name", ""),
         "description": legacy.get("description", ""),
+        "avatarUrl":   avatar_url,
         "followers":   legacy.get("followers_count", 0),
         "following":   legacy.get("friends_count", 0),
         "tweets":      legacy.get("statuses_count", 0),
-        "verified":    legacy.get("verified", False) or legacy.get("is_blue_verified", False),
+        "verified":    bool(result.get("is_blue_verified") or legacy.get("verified", False) or legacy.get("is_blue_verified", False)),
     }
 
 def _extract_instructions(data: Dict[str, Any], path: List[str]) -> List[Dict[str, Any]]:
@@ -683,6 +709,17 @@ def cmd_user(username: str) -> None:
     u = _parse_user(result)
     if not u:
         _out(False, None, f"User not found: {username}")
+        return
+    _out(True, u)
+
+def cmd_user_by_id(rest_id: str) -> None:
+    """Resolve a numeric user rest_id → full profile (P1 bidirectional lookup)."""
+    variables = {"userId": rest_id, "withSafetyModeUserFields": True}
+    data = _gql_get("UserByRestId", variables)
+    result = _dig(data, "data", "user", "result")
+    u = _parse_user(result)
+    if not u:
+        _out(False, None, f"User not found: {rest_id}")
         return
     _out(True, u)
 
@@ -853,8 +890,27 @@ def cmd_reply(tweet_id: str, text: str) -> None:
         "semantic_annotation_ids": [],
     }
     result = _gql_post("CreateTweet", variables)
-    new_id = _dig(result, "data", "create_tweet", "tweet_results", "result", "rest_id", default="")
-    _out(True, {"id": new_id})
+    new_tweet = _dig(result, "data", "create_tweet", "tweet_results", "result") or {}
+    new_id = new_tweet.get("rest_id", "")
+    # in_reply_to identity is free in the new tweet's legacy. Name/avatar are
+    # not in this response (free-fields-only policy) — resolver enriches via
+    # `x user` if it needs the full profile.
+    new_legacy = new_tweet.get("legacy") or {}
+    in_reply_to_user_id = new_legacy.get("in_reply_to_user_id_str", "")
+    in_reply_to_screen = new_legacy.get("in_reply_to_screen_name", "")
+    author_screen = new_legacy.get("in_reply_to_screen_name", "") or ""
+    new_url = f"https://twitter.com/i/web/status/{new_id}" if new_id else ""
+    _out(True, {
+        "id": new_id,
+        "result": {"tweet_id": new_id, "url": new_url},
+        "in_reply_to": {
+            "tweet_id": tweet_id,
+            "author": {
+                "id": in_reply_to_user_id or None,
+                "username": in_reply_to_screen or None,
+            },
+        },
+    })
 
 def cmd_post(text: str) -> None:
     """Post a new tweet (no reply context)."""
@@ -1073,36 +1129,58 @@ def cmd_quote(tweet_id: str, text: str) -> None:
         "semantic_annotation_ids": [],
     }
     result = _gql_post("CreateTweet", variables)
-    new_id = _dig(result, "data", "create_tweet", "tweet_results", "result", "rest_id", default="")
-    _out(True, {"id": new_id})
+    new_tweet = _dig(result, "data", "create_tweet", "tweet_results", "result") or {}
+    new_id = new_tweet.get("rest_id", "")
+    new_url = f"https://twitter.com/i/web/status/{new_id}" if new_id else ""
+    _out(True, {"id": new_id, "result": {"tweet_id": new_id, "url": new_url}})
 
 def cmd_like(tweet_id: str) -> None:
     variables = {"tweet_id": tweet_id, "action_source": "tweet_detail"}
     _gql_post("FavoriteTweet", variables)
-    _out(True, {"liked": True})
+    # FavoriteTweet returns no author data — free-fields-only policy means we
+    # emit author: null; resolver enriches via `x tweet <tweet_id>`.
+    _out(True, {"liked": True, "result": {"tweet_id": tweet_id, "liked": True}, "author": None})
 
 def cmd_unlike(tweet_id: str) -> None:
     variables = {"tweet_id": tweet_id}
     _gql_post("UnfavoriteTweet", variables)
-    _out(True, {"liked": False})
+    _out(True, {"liked": False, "result": {"tweet_id": tweet_id, "liked": False}, "author": None})
 
 def cmd_retweet(tweet_id: str) -> None:
     variables = {"tweet_id": tweet_id, "dark_request": False}
     result = _gql_post("CreateRetweet", variables)
-    new_id = _dig(result, "data", "create_retweet", "retweet_results", "result", "rest_id", default="")
-    _out(True, {"id": new_id})
+    rt_tweet = _dig(result, "data", "create_retweet", "retweet_results", "result") or {}
+    new_id = rt_tweet.get("rest_id", "")
+    # CreateRetweet may echo the retweeted tweet's author; surface if present.
+    author = _parse_tweet(rt_tweet)
+    rt_author = author.get("author") if author else None
+    unified_author = None
+    if rt_author and (rt_author.get("id") or rt_author.get("screenName")):
+        sn = rt_author.get("screenName", "") or ""
+        unified_author = {
+            "id": rt_author.get("id") or None,
+            "username": sn or None,
+            "name": rt_author.get("name") or None,
+            "avatar_url": rt_author.get("avatarUrl") or None,
+            "profile_url": f"https://twitter.com/{sn}" if sn else None,
+        }
+    new_url = f"https://twitter.com/i/web/status/{new_id}" if new_id else ""
+    _out(True, {"id": new_id, "result": {"tweet_id": new_id, "url": new_url}, "author": unified_author})
 
 def cmd_unretweet(tweet_id: str) -> None:
     variables = {"source_tweet_id": tweet_id, "dark_request": False}
     _gql_post("DeleteRetweet", variables)
     _out(True, {"retweeted": False})
 
-def _v1_post(path: str, form_data: str) -> None:
+def _v1_post(path: str, form_data: str) -> Dict[str, Any]:
     """POST to api.twitter.com/1.1/* with cookie auth (form-urlencoded).
 
     NOTE: Use api.twitter.com, NOT x.com/i/1.1.
     x.com/i/1.1 rejects cookie-only clients with 401; api.twitter.com accepts
     auth_token + ct0 and returns proper application-level errors.
+
+    Returns the parsed JSON response body (friendships/create returns the
+    full target user object, which we surface as the unified identity).
     """
     url = f"https://api.twitter.com/1.1/{path}"
     headers = {**_headers(), "content-type": "application/x-www-form-urlencoded"}
@@ -1110,6 +1188,29 @@ def _v1_post(path: str, form_data: str) -> None:
         lambda: _get_session().post(url, headers=headers, data=form_data, timeout=20)
     )
     resp.raise_for_status()
+    try:
+        return resp.json()
+    except Exception:
+        return {}
+
+def _unified_from_v1_user(u: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a v1.1 friendships user object into the unified identity shape."""
+    if not u:
+        return {}
+    avatar = u.get("profile_image_url_https", "")
+    if avatar and "_normal" in avatar:
+        avatar = avatar.replace("_normal", "")
+    screen_name = u.get("screen_name", "")
+    return {
+        "id": u.get("id_str") or (str(u.get("id")) if u.get("id") else ""),
+        "username": screen_name,
+        "name": u.get("name", ""),
+        "avatar_url": avatar,
+        "profile_url": f"https://twitter.com/{screen_name}" if screen_name else "",
+        "bio": u.get("description", ""),
+        "followers": u.get("followers_count", 0),
+        "verified": bool(u.get("verified", False)),
+    }
 
 def cmd_follow(username: str) -> None:
     """Follow a user via v1.1 friendships/create (cookie auth, uses numeric user_id)."""
@@ -1119,11 +1220,13 @@ def cmd_follow(username: str) -> None:
     user_id = _dig(user_data, "data", "user", "result", "rest_id")
     if not user_id:
         raise ValueError(f"Could not resolve user_id for @{username}")
-    _v1_post(
+    result = _v1_post(
         "friendships/create.json",
         f"user_id={urllib.parse.quote(user_id)}&include_entities=true"
     )
-    _out(True, {"following": True})
+    # friendships/create returns the full target user; surface as unified identity.
+    user = _unified_from_v1_user(result)
+    _out(True, {"following": True, "user": user})
 
 def cmd_unfollow(username: str) -> None:
     """Unfollow a user via v1.1 friendships/destroy (cookie auth, uses numeric user_id)."""
@@ -1133,11 +1236,12 @@ def cmd_unfollow(username: str) -> None:
     user_id = _dig(user_data, "data", "user", "result", "rest_id")
     if not user_id:
         raise ValueError(f"Could not resolve user_id for @{username}")
-    _v1_post(
+    result = _v1_post(
         "friendships/destroy.json",
         f"user_id={urllib.parse.quote(user_id)}&include_entities=true"
     )
-    _out(True, {"following": False})
+    user = _unified_from_v1_user(result)
+    _out(True, {"following": False, "user": user})
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -1188,6 +1292,11 @@ def main() -> None:
                 _out(False, None, "user requires a username argument")
             else:
                 cmd_user(rest[0])
+        elif cmd == "user-by-id":
+            if not rest:
+                _out(False, None, "user-by-id requires a rest_id argument")
+            else:
+                cmd_user_by_id(rest[0])
         elif cmd == "tweet":
             if not rest:
                 _out(False, None, "tweet requires a tweet_id argument")

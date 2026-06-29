@@ -8,10 +8,11 @@
 
 import { Command } from 'commander';
 import { request } from '../../http/client.js';
-import { printOutput } from '../../output/formatter.js';
+import { printOutput, printJsonResult, printJsonError } from '../../output/formatter.js';
 import { loadCredential, resolveAccount } from '../../auth/store.js';
 import { AuthError } from '../../http/client.js';
 import { checkWriteDuplicate, recordWrite } from '../../http/write-history.js';
+import { makeUser, type UnifiedUser } from '../../types/identity.js';
 
 const LI_API = 'https://www.linkedin.com/voyager/api';
 const LI_OAUTH_API = 'https://api.linkedin.com';
@@ -29,14 +30,14 @@ interface LIPost {
   url: string;
 }
 
-interface LIProfile {
+interface LIProfile extends UnifiedUser {
   rank: number;
-  username: string;
+  /** first+last, kept for template back-compat (== unified `name`). */
   full_name: string;
   headline: string;
   connections: number;
-  followers: number;
   location: string;
+  /** Same as profile_url; kept for template back-compat. */
   url: string;
 }
 
@@ -155,17 +156,40 @@ async function getProfile(username: string, account?: string, dataDir?: string):
   if (!data) return null;
 
   const profile = data['profile'] as Record<string, unknown> | null ?? data;
+  const mini = (profile['miniProfile'] ?? {}) as Record<string, unknown>;
   const firstName = String((profile['firstName'] as { defaultLocale?: string; localized?: Record<string, string> } | string | null) ?? '');
   const lastName = String((profile['lastName'] as { defaultLocale?: string; localized?: Record<string, string> } | string | null) ?? '');
   const headline = String(profile['headline'] ?? '');
+  const fullName = `${firstName} ${lastName}`.trim();
+
+  // Stable id: prefer miniProfile.objectUrn trailing segment (e.g. ACoAA…), else entityUrn.
+  const objectUrn = String(mini['objectUrn'] ?? profile['entityUrn'] ?? '');
+  const liId = objectUrn.split(':').pop() || null;
+  // Best-effort avatar: LinkedIn serves a rootUrl + per-size artifact path.
+  const picture = (mini['picture'] ?? profile['picture']) as
+    | { rootUrl?: string; artifacts?: Array<{ fileIdentifyingUrlPathSegment?: string }> }
+    | undefined;
+  let avatarUrl: string | null = null;
+  if (picture?.rootUrl && picture.artifacts?.length) {
+    const seg = picture.artifacts[0]?.fileIdentifyingUrlPathSegment;
+    if (seg) avatarUrl = `${picture.rootUrl}${seg}`;
+  }
 
   return {
+    ...makeUser({
+      id: liId,
+      username,
+      name: fullName || null,
+      avatar_url: avatarUrl,
+      profile_url: `https://www.linkedin.com/in/${username}/`,
+      bio: headline ? headline.slice(0, 300) : null,
+      followers: 0, // LinkedIn API does not expose follower counts here — documented gap
+      verified: false,
+    }),
     rank: 1,
-    username,
-    full_name: `${firstName} ${lastName}`.trim(),
+    full_name: fullName,
     headline: headline.slice(0, 120),
     connections: Number((data['connections'] as { paging?: { total?: number } } | null)?.paging?.total ?? 0),
-    followers: 0,
     location: String((profile['locationName'] ?? '')),
     url: `https://www.linkedin.com/in/${username}/`,
   };
@@ -236,11 +260,13 @@ Auth requirements:
       try {
         const profile = await getProfile(username, opts.account, opts.dataDir);
         if (!profile) {
+          if (opts.json) printJsonError(new Error(`Profile not found: ${username}`), `li/profile/${username}`);
           console.error(`Profile not found: ${username}`);
           process.exit(1);
         }
         printOutput([profile] as unknown as Record<string, unknown>[], PROFILE_TEMPLATE, `li/profile/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `li/profile/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -259,6 +285,7 @@ Auth requirements:
         const items = await getFeed(limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], FEED_TEMPLATE, 'li/feed', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, 'li/feed');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -270,11 +297,14 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (text: string, opts: { account?: string; dataDir?: string; force?: boolean }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (text: string, opts: { account?: string; dataDir?: string; force?: boolean; json?: boolean }) => {
       try {
         const result = await postToLinkedIn(text, opts.account, opts.dataDir, !!opts.force);
-        console.log(`Posted: ${result.url}`);
+        if (opts.json) printJsonResult({ success: true, result: { id: result.id, url: result.url } }, 'li/post');
+        else console.log(`Posted: ${result.url}`);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'li/post');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -285,11 +315,14 @@ Auth requirements:
     .description('Delete a LinkedIn post (post_id from li post output, or full URN urn:li:ugcPost:…)')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (postId: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (postId: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
       try {
         await deleteLinkedInPost(postId, opts.account, opts.dataDir);
-        console.log(`deleted:${postId}`);
+        if (opts.json) printJsonResult({ success: true, result: { id: postId, deleted: true } }, 'li/delete');
+        else console.log(`deleted:${postId}`);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'li/delete');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }

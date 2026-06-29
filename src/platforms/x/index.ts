@@ -9,6 +9,7 @@ import {
   searchTweets, getUserTimeline, getUserProfile, getHomeTimeline,
   getTweet, getFollowers, getFollowing, getBookmarks, getNotifications, getListTweets, getLikes,
   getDMList, getDMConversation, getAnalytics,
+  getUserById,
 } from './read.js';
 import {
   postTweet, postArticle, replyToTweet, likeTweet, retweetTweet, followUser, sendDM, deleteTweet,
@@ -16,14 +17,21 @@ import {
   quoteTweet, unlikeTweet, unretweetTweet, unfollowUser, bookmarkTweet, unbookmarkTweet,
   uploadMedia,
 } from './write.js';
-import { printOutput } from '../../output/formatter.js';
+import type { WriteResult } from './write.js';
+import { printOutput, printJsonResult, printJsonError } from '../../output/formatter.js';
 import { recordDMRead } from '../../http/write-history.js';
 
-const TWEET_TEMPLATE = '{rank}. @{author} likes:{likes} rt:{retweets} replies:{replies} — {text} {url}';
+const TWEET_TEMPLATE = '{rank}. @{author.username} likes:{likes} rt:{retweets} replies:{replies} — {text} {url}';
 const USER_TEMPLATE = '{rank}. @{username} ({name}) followers:{followers} following:{following} tweets:{tweets} — {bio}';
-const DM_TEMPLATE = '{rank}. @{sender} [{created_at}] — {text}';
-const DM_CONVO_TEMPLATE = '{rank}. @{sender}→@{recipient} [{created_at}] — {text}';
+const DM_TEMPLATE = '{rank}. @{sender.username} [{created_at}] — {text}';
+const DM_CONVO_TEMPLATE = '{rank}. @{sender.username}→@{recipient} [{created_at}] — {text}';
 const ANALYTICS_TEMPLATE = '{rank}. {created_at} imp:{views} eng:{engagements} clk:{profile_clicks} lk:{likes} rp:{replies} — {text}';
+
+/** Drop the human-readable `message` line so it doesn't leak into --json output. */
+function stripMessage(r: WriteResult): Omit<WriteResult, 'message'> {
+  const { message, ...rest } = r; // eslint-disable-line @typescript-eslint/no-unused-vars
+  return rest;
+}
 
 export function registerX(program: Command): void {
   const x = program
@@ -57,6 +65,7 @@ Auth requirements:
         const items = await searchTweets(query, limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, 'x/search', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, "x/search");
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -75,6 +84,7 @@ Auth requirements:
         const items = await searchTweets(`to:${username}`, limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, `x/mentions/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `x/mentions/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -93,6 +103,7 @@ Auth requirements:
         const items = await getUserTimeline(username, limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, `x/timeline/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `x/timeline/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -111,6 +122,7 @@ Auth requirements:
         const items = await getHomeTimeline(limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, 'x/home', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, "x/home");
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -132,6 +144,7 @@ Auth requirements:
         }
         printOutput([user] as unknown as Record<string, unknown>[], USER_TEMPLATE, `x/profile/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `x/profile/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -151,6 +164,54 @@ Auth requirements:
         const items = [result.tweet, ...result.thread];
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, `x/tweet/${tweetId}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `x/tweet/${tweetId}`);
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    });
+
+  x
+    .command('user <username_or_id>')
+    .description('Look up a user by @username or numeric id (bidirectional id<->handle)')
+    .option('--account <name>', 'Account to use')
+    .option('--data-dir <dir>', 'Data directory override')
+    .option('--json', 'Output as JSON')
+    .action(async (usernameOrId: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
+      const start = Date.now();
+      const isNumericId = /^\d+$/.test(usernameOrId);
+      const source = isNumericId ? `x/user/${usernameOrId}` : `x/user/@${usernameOrId}`;
+      try {
+        const user = isNumericId
+          ? await getUserById(usernameOrId, opts.account, opts.dataDir)
+          : await getUserProfile(usernameOrId, opts.account, opts.dataDir);
+        if (!user) {
+          if (opts.json) printJsonError(new Error(`User ${usernameOrId} not found`), source);
+          console.error(`User ${usernameOrId} not found.`);
+          process.exit(1);
+        }
+        printOutput([user] as unknown as Record<string, unknown>[], USER_TEMPLATE, source, start, { json: opts.json });
+      } catch (err) {
+        if (opts.json) printJsonError(err, source);
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    });
+
+  x
+    .command('get <tweet_id> [limit]')
+    .description('Look up a single tweet (+ thread) with unified author. Alias: x thread')
+    .option('--account <name>', 'Account to use')
+    .option('--data-dir <dir>', 'Data directory override')
+    .option('--json', 'Output as JSON')
+    .action(async (tweetId: string, limitArg: string | undefined, opts: { account?: string; dataDir?: string; json?: boolean }) => {
+      const start = Date.now();
+      const limit = limitArg ? parseInt(limitArg, 10) : 20;
+      try {
+        const result = await getTweet(tweetId, limit, opts.account, opts.dataDir);
+        const items = [result.tweet, ...result.thread];
+        printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, `x/get/${tweetId}`, start, { json: opts.json });
+      } catch (err) {
+        if (opts.json) printJsonError(err, `x/get/${tweetId}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -169,6 +230,7 @@ Auth requirements:
         const items = await getFollowers(username, limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], USER_TEMPLATE, `x/followers/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `x/followers/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -187,6 +249,7 @@ Auth requirements:
         const items = await getFollowing(username, limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], USER_TEMPLATE, `x/following/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `x/following/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -205,6 +268,7 @@ Auth requirements:
         const items = await getBookmarks(limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, 'x/bookmarks', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, "x/bookmarks");
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -223,6 +287,7 @@ Auth requirements:
         const items = await getNotifications(limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, 'x/notifications', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, "x/notifications");
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -241,6 +306,7 @@ Auth requirements:
         const items = await getListTweets(listId, limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, `x/list/${listId}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `x/list/${listId}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -259,6 +325,7 @@ Auth requirements:
         const items = await getLikes(username, limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], TWEET_TEMPLATE, `x/likes/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `x/likes/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -279,6 +346,7 @@ Auth requirements:
         const items = await getDMList(limit, opts.since, opts.until, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], DM_TEMPLATE, 'x/dm-list', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, "x/dm-list");
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -299,6 +367,7 @@ Auth requirements:
         await recordDMRead('x', username, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], DM_CONVO_TEMPLATE, `x/dm/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `x/dm/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -322,12 +391,15 @@ Auth requirements:
         const items = await getAnalytics(username, limit, !!opts.includeReplies, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], ANALYTICS_TEMPLATE, `x/analytics/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `x/analytics/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
     });
 
   // ── Write commands ─────────────────────────────────────────────
+  // In --json mode, success emits { ok, schema_version, source, data: <WriteResult-without-message> }
+  // and failure emits { ok:false, schema_version, source, error:{code,message} } + exit 1.
 
   x
     .command('tweet <text>')
@@ -336,7 +408,8 @@ Auth requirements:
     .option('--data-dir <dir>', 'Data directory override')
     .option('--media <paths...>', 'Attach image(s) (path or URL, multiple allowed)')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (text: string, opts: { account?: string; dataDir?: string; media?: string[]; force?: boolean }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (text: string, opts: { account?: string; dataDir?: string; media?: string[]; force?: boolean; json?: boolean }) => {
       try {
         let mediaIds: string[] | undefined;
         if (opts.media?.length) {
@@ -347,8 +420,10 @@ Auth requirements:
           }
         }
         const result = await postTweet(text, opts.account, opts.dataDir, mediaIds, !!opts.force);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/tweet');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/tweet');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -361,11 +436,14 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (text: string, opts: { title?: string; account?: string; dataDir?: string; force?: boolean }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (text: string, opts: { title?: string; account?: string; dataDir?: string; force?: boolean; json?: boolean }) => {
       try {
         const result = await postArticle(text, opts.account, opts.dataDir, opts.title, !!opts.force);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/article');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/article');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -379,7 +457,8 @@ Auth requirements:
     .option('--media <paths...>', 'Attach image(s) (path or URL, multiple allowed)')
     .option('--author <handle>', 'Tweet author username (enables per-author 14-day reply cooldown)')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (tweetId: string, text: string, opts: { account?: string; dataDir?: string; media?: string[]; author?: string; force?: boolean }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (tweetId: string, text: string, opts: { account?: string; dataDir?: string; media?: string[]; author?: string; force?: boolean; json?: boolean }) => {
       try {
         let mediaIds: string[] | undefined;
         if (opts.media?.length) {
@@ -390,8 +469,10 @@ Auth requirements:
           }
         }
         const result = await replyToTweet(text, tweetId, opts.account, opts.dataDir, mediaIds, !!opts.force, opts.author);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/reply');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/reply');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -402,11 +483,14 @@ Auth requirements:
     .description('Like a tweet')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (tweetId: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (tweetId: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
       try {
         const result = await likeTweet(tweetId, opts.account, opts.dataDir);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/like');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/like');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -417,11 +501,14 @@ Auth requirements:
     .description('Retweet a tweet')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (tweetId: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (tweetId: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
       try {
         const result = await retweetTweet(tweetId, opts.account, opts.dataDir);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/retweet');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/retweet');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -432,11 +519,14 @@ Auth requirements:
     .description('Follow a user')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (username: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (username: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
       try {
         const result = await followUser(username, opts.account, opts.dataDir);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/follow');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/follow');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -448,11 +538,14 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (username: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (username: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean; json?: boolean }) => {
       try {
         const result = await sendDM(username, text, opts.account, opts.dataDir, !!opts.force);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/dm');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/dm');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -463,11 +556,14 @@ Auth requirements:
     .description('Delete a tweet')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (tweetId: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (tweetId: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
       try {
         const result = await deleteTweet(tweetId, opts.account, opts.dataDir);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/delete');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/delete');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -483,7 +579,8 @@ Auth requirements:
       try {
         const result = await deleteTweets(tweetIds, opts.account, opts.dataDir);
         if (opts.json) {
-          console.log(JSON.stringify(result, null, 2));
+          printJsonResult(result, 'x/delete-batch');
+          if (result.failed.length > 0) process.exit(1);
           return;
         }
         for (const id of result.deleted) {
@@ -497,6 +594,7 @@ Auth requirements:
           process.exit(1);
         }
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/delete-batch');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -508,11 +606,14 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
-    .action(async (tweetId: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (tweetId: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean; json?: boolean }) => {
       try {
         const result = await quoteTweet(tweetId, text, opts.account, opts.dataDir, !!opts.force);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/quote');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/quote');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -523,11 +624,14 @@ Auth requirements:
     .description('Unlike a tweet')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (tweetId: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (tweetId: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
       try {
         const result = await unlikeTweet(tweetId, opts.account, opts.dataDir);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/unlike');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/unlike');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -538,11 +642,14 @@ Auth requirements:
     .description('Undo a retweet')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (tweetId: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (tweetId: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
       try {
         const result = await unretweetTweet(tweetId, opts.account, opts.dataDir);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/unretweet');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/unretweet');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -553,11 +660,14 @@ Auth requirements:
     .description('Unfollow a user')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (username: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (username: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
       try {
         const result = await unfollowUser(username, opts.account, opts.dataDir);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/unfollow');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/unfollow');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -568,11 +678,14 @@ Auth requirements:
     .description('Bookmark a tweet (requires cookie auth + Python curl_cffi)')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (tweetId: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (tweetId: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
       try {
         const result = await bookmarkTweet(tweetId, opts.account, opts.dataDir);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/bookmark');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/bookmark');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -583,11 +696,14 @@ Auth requirements:
     .description('Remove a bookmark (requires cookie auth + Python curl_cffi)')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
-    .action(async (tweetId: string, opts: { account?: string; dataDir?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (tweetId: string, opts: { account?: string; dataDir?: string; json?: boolean }) => {
       try {
         const result = await unbookmarkTweet(tweetId, opts.account, opts.dataDir);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'x/unbookmark');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'x/unbookmark');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }

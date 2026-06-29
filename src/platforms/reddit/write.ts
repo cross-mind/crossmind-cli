@@ -29,6 +29,14 @@ export interface RedditWriteResult {
   success: boolean;
   id?: string;
   message: string;
+  /** Structured action result for --json consumers. */
+  result?: { comment_id?: string; url?: string };
+  /** The post/comment this write targeted (free-fields-only). */
+  post?: {
+    id: string | null;
+    subreddit: string | null;
+    author: { id: string | null; username: string | null };
+  };
 }
 
 interface WriteConfig {
@@ -93,9 +101,21 @@ export async function submitComment(
   const creds = await loadRedditCredentials(account, dataDir);
   if (creds?.type === 'cookie') {
     await writeDelay();
-    const { id } = await bridgeComment(parentId, text, cookieCreds(creds, proxy));
+    const r = await bridgeComment(parentId, text, cookieCreds(creds, proxy));
     await recordWrite('reddit', 'comment', text, parentId, dataDir);
-    return { success: true, id, message: `commented:${id} on:${parentId}` };
+    const postId = (r.link_id ?? parentId).replace(/^t3_/, '').replace(/^t1_/, '');
+    const url = r.permalink ? `https://reddit.com${r.permalink}` : '';
+    return {
+      success: true,
+      id: r.id,
+      message: `commented:${r.id} on:${parentId}`,
+      result: { comment_id: r.id, url: url || undefined },
+      post: {
+        id: postId || null,
+        subreddit: r.subreddit ?? null,
+        author: { id: null, username: null }, // post author not free in comment response
+      },
+    };
   }
 
   const { baseUrl, headers } = await getWriteConfig(account, dataDir);
@@ -107,7 +127,7 @@ export async function submitComment(
     text,
   });
 
-  const data = await request<{ json: { data: { things: Array<{ data: { id: string; name: string } }> } } }>(
+  const data = await request<{ json: { data: { things: Array<{ data: Record<string, unknown> }> } } }>(
     `${baseUrl}/api/comment`,
     {
       method: 'POST',
@@ -116,12 +136,23 @@ export async function submitComment(
     }
   );
 
-  const commentId = data?.json?.data?.things?.[0]?.data?.id ?? '';
+  const thing = data?.json?.data?.things?.[0]?.data ?? {};
+  const commentId = String(thing['id'] ?? '');
+  const linkId = String(thing['link_id'] ?? parentId);
+  const subreddit = thing['subreddit'] ? String(thing['subreddit']) : null;
+  const permalink = thing['permalink'] ? `https://reddit.com${thing['permalink']}` : '';
+  const postId = linkId.replace(/^t3_/, '').replace(/^t1_/, '');
   await recordWrite('reddit', 'comment', text, parentId, dataDir);
   return {
     success: true,
     id: commentId,
     message: `commented:${commentId} on:${parentId}`,
+    result: { comment_id: commentId, url: permalink || undefined },
+    post: {
+      id: postId || null,
+      subreddit,
+      author: { id: null, username: null }, // post author not free in comment response
+    },
   };
 }
 

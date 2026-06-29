@@ -58,6 +58,19 @@ export interface WriteResult {
   success: boolean;
   id?: string;
   message: string;
+  /** Structured action result (tweet_id + url) for --json consumers. */
+  result?: { tweet_id?: string; url?: string; dm_id?: string; liked?: boolean };
+  /** The person this write targeted (free-fields-only; null where the API gave nothing). */
+  author?: import('../../types/identity.js').UnifiedUser | null;
+  /** Reply context: the original tweet + its author. */
+  in_reply_to?: {
+    tweet_id: string;
+    author: { id: string | null; username: string | null };
+  };
+  /** DM recipient, when available. */
+  participant?: import('../../types/identity.js').UnifiedUser;
+  /** Follow/unfollow target. */
+  user?: import('../../types/identity.js').UnifiedUser;
 }
 
 /** Upload a media file (image/gif/video) and return the media_id. Requires OAuth. */
@@ -182,6 +195,8 @@ export async function replyToTweet(
     return {
       success: true,
       id: result.id,
+      result: result.result,
+      in_reply_to: result.in_reply_to,
       message: `replied:${result.id} to:${tweetId}${authorHandle ? ` author:@${authorHandle}` : ''} [auth:cookie]${force ? ' [FORCED]' : ''}`,
     };
   }
@@ -195,10 +210,13 @@ export async function replyToTweet(
     { method: 'POST', creds, body }
   );
   await recordWrite('x', 'reply', text, tweetId, dataDir, authorHandle, !!force);
+  const newId = data.data.id;
   return {
     success: true,
-    id: data.data.id,
-    message: `replied:${data.data.id} to:${tweetId}${authorHandle ? ` author:@${authorHandle}` : ''}${mediaIds?.length ? ` media:${mediaIds.length}` : ''} [auth:oauth]${force ? ' [FORCED]' : ''}`,
+    id: newId,
+    result: { tweet_id: newId, url: `https://twitter.com/i/web/status/${newId}` },
+    in_reply_to: { tweet_id: tweetId, author: { id: null, username: authorHandle ?? null } },
+    message: `replied:${newId} to:${tweetId}${authorHandle ? ` author:@${authorHandle}` : ''}${mediaIds?.length ? ` media:${mediaIds.length}` : ''} [auth:oauth]${force ? ' [FORCED]' : ''}`,
   };
 }
 
@@ -213,14 +231,25 @@ export async function likeTweet(
 
   // Prefer cookie auth (GraphQL)
   if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
-    await bridgeLike(tweetId, creds as { authToken: string; ct0: string });
-    return { success: true, message: `liked:${tweetId} [auth:cookie]` };
+    const r = await bridgeLike(tweetId, creds as { authToken: string; ct0: string });
+    // FavoriteTweet returns no author → null; resolver enriches via `x tweet`.
+    return {
+      success: true,
+      result: r.result ?? { tweet_id: tweetId, liked: true },
+      author: r.author ?? null,
+      message: `liked:${tweetId} [auth:cookie]`,
+    };
   }
 
   const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
   const userId = meData.data.id;
   await xRequest(`/2/users/${userId}/likes`, { method: 'POST', creds, body: { tweet_id: tweetId } });
-  return { success: true, message: `liked:${tweetId} [auth:oauth]` };
+  return {
+    success: true,
+    result: { tweet_id: tweetId, liked: true },
+    author: null,
+    message: `liked:${tweetId} [auth:oauth]`,
+  };
 }
 
 /** Retweet */
@@ -235,13 +264,19 @@ export async function retweetTweet(
   // Prefer cookie auth (GraphQL)
   if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
     const result = await bridgeRetweet(tweetId, creds as { authToken: string; ct0: string });
-    return { success: true, id: result.id, message: `retweeted:${tweetId} [auth:cookie]` };
+    return {
+      success: true,
+      id: result.id,
+      result: result.result ?? { tweet_id: result.id, url: `https://twitter.com/i/web/status/${result.id}` },
+      author: result.author ?? null,
+      message: `retweeted:${tweetId} [auth:cookie]`,
+    };
   }
 
   const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
   const userId = meData.data.id;
   await xRequest(`/2/users/${userId}/retweets`, { method: 'POST', creds, body: { tweet_id: tweetId } });
-  return { success: true, message: `retweeted:${tweetId} [auth:oauth]` };
+  return { success: true, author: null, message: `retweeted:${tweetId} [auth:oauth]` };
 }
 
 /** Follow a user by username */
@@ -258,8 +293,8 @@ export async function followUser(
   // Each OAuth follow costs 3 API calls; cookie path costs 0.
   if (creds.authToken && creds.ct0 && await isCookieClientAvailable()) {
     try {
-      await bridgeFollow(username, creds as { authToken: string; ct0: string });
-      return { success: true, message: `following:@${username} [auth:cookie]` };
+      const r = await bridgeFollow(username, creds as { authToken: string; ct0: string });
+      return { success: true, user: r.user ?? null, message: `following:@${username} [auth:cookie]` };
     } catch {
       // Bridge unavailable or follow failed; fall through to OAuth v2
     }
@@ -267,10 +302,21 @@ export async function followUser(
 
   const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds });
   const myId = meData.data.id;
-  const targetData = await xRequest<{ data: { id: string } }>(`/2/users/by/username/${username}`, { creds });
+  const targetData = await xRequest<{ data: { id: string } }>(`/2/users/by/username/${username}?user.fields=id,username,name,profile_image_url,public_metrics,description,verified`, { creds });
   const targetId = targetData.data.id;
   await xRequest(`/2/users/${myId}/following`, { method: 'POST', creds, body: { target_user_id: targetId } });
-  return { success: true, message: `following:@${username} [auth:oauth]` };
+  const u = (targetData as { data: Record<string, unknown> }).data;
+  const user: import('../../types/identity.js').UnifiedUser = {
+    id: String(u['id'] ?? '') || null,
+    username: String(u['username'] ?? '') || null,
+    name: u['name'] ? String(u['name']) : null,
+    avatar_url: u['profile_image_url'] ? String(u['profile_image_url']) : null,
+    profile_url: u['username'] ? `https://twitter.com/${u['username']}` : null,
+    bio: u['description'] ? String(u['description']) : null,
+    followers: (u['public_metrics'] as Record<string, number> | null)?.['followers_count'] ?? null,
+    verified: u['verified'] === true,
+  };
+  return { success: true, user, message: `following:@${username} [auth:oauth]` };
 }
 
 /** Send a DM */
@@ -292,11 +338,21 @@ export async function sendDM(
   const creds = await getXCreds(account, dataDir);
   await writeDelay();
 
-  const targetData = await xRequest<{ data: { id: string } }>(
-    `/2/users/by/username/${username}`,
+  const targetData = await xRequest<{ data: Record<string, unknown> }>(
+    `/2/users/by/username/${username}?user.fields=id,username,name,profile_image_url,public_metrics,description,verified`,
     { creds }
   );
-  const targetId = targetData.data.id;
+  const targetId = String(targetData.data['id'] ?? '');
+  const participant: import('../../types/identity.js').UnifiedUser = {
+    id: targetId || null,
+    username: String(targetData.data['username'] ?? '') || null,
+    name: targetData.data['name'] ? String(targetData.data['name']) : null,
+    avatar_url: targetData.data['profile_image_url'] ? String(targetData.data['profile_image_url']) : null,
+    profile_url: targetData.data['username'] ? `https://twitter.com/${targetData.data['username']}` : null,
+    bio: targetData.data['description'] ? String(targetData.data['description']) : null,
+    followers: (targetData.data['public_metrics'] as Record<string, number> | null)?.['followers_count'] ?? null,
+    verified: targetData.data['verified'] === true,
+  };
 
   let data: { data: { dm_conversation_id: string } };
   try {
@@ -333,6 +389,8 @@ export async function sendDM(
   return {
     success: true,
     id: data.data.dm_conversation_id,
+    result: { dm_id: data.data.dm_conversation_id },
+    participant,
     message: `dm_sent to:@${username} text:${text.slice(0, 50)} [auth:oauth]${force ? ' [FORCED]' : ''}`,
   };
 }

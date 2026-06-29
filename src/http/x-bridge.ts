@@ -21,6 +21,7 @@ import { access, constants } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { XTweet, XUser } from '../platforms/x/read.js';
+import { makeUser, type UnifiedUser } from '../types/identity.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -111,7 +112,7 @@ async function runFetch<T>(
 interface CliTweet {
   id: string;
   text: string;
-  author: { screenName: string; name: string; id?: string };
+  author: { screenName: string; name: string; id?: string; avatarUrl?: string };
   metrics: { likes: number; retweets: number; replies: number; views?: number; quotes?: number };
   createdAtISO?: string;
   createdAt?: string;
@@ -124,6 +125,7 @@ interface CliUser {
   screenName: string;
   bio?: string;
   description?: string;
+  avatarUrl?: string;
   followers: number;
   following: number;
   tweets: number;
@@ -136,13 +138,28 @@ interface CliResponse<T> {
   error?: { message: string };
 }
 
+/** Build a UnifiedUser-shaped author from a CliTweet's author block. */
+function authorFromCli(a: CliTweet['author']): import('../types/identity.js').UnifiedUser {
+  const username = a?.screenName ?? '';
+  return {
+    id: a?.id || null,
+    username: username || null,
+    name: a?.name || null,
+    avatar_url: a?.avatarUrl || null,
+    profile_url: username ? `https://twitter.com/${username}` : null,
+    bio: null,
+    followers: null,
+    verified: null,
+  };
+}
+
 function mapCliTweet(t: CliTweet, rank: number): XTweet {
   const username = t.author?.screenName ?? '';
   return {
     rank,
     id: t.id,
     text: (t.text ?? ''),
-    author: username,
+    author: authorFromCli(t.author),
     likes: t.metrics?.likes ?? 0,
     retweets: t.metrics?.retweets ?? 0,
     replies: t.metrics?.replies ?? 0,
@@ -153,16 +170,19 @@ function mapCliTweet(t: CliTweet, rank: number): XTweet {
 }
 
 function mapCliUser(u: CliUser, rank: number): XUser {
+  const username = u.screenName ?? '';
   return {
     rank,
-    username: u.screenName ?? '',
-    name: u.name ?? '',
+    id: u.id || null,
+    username: username || null,
+    name: u.name ?? null,
+    avatar_url: u.avatarUrl || null,
+    profile_url: username ? `https://twitter.com/${username}` : null,
+    bio: (u.bio ?? u.description ?? '').slice(0, 160),
     followers: u.followers ?? 0,
+    verified: Boolean(u.verified ?? false),
     following: u.following ?? 0,
     tweets: u.tweets ?? 0,
-    bio: (u.bio ?? u.description ?? '').slice(0, 160),
-    verified: String(u.verified ?? false),
-    url: `https://twitter.com/${u.screenName ?? ''}`,
   };
 }
 
@@ -199,17 +219,18 @@ export async function bridgeUserProfile(
   if (!result.ok) return null;
   const u = result.data;
   if (!u) return null;
-  return {
-    rank: 1,
-    username: u.screenName ?? username,
-    name: u.name ?? '',
-    followers: u.followers ?? 0,
-    following: u.following ?? 0,
-    tweets: u.tweets ?? 0,
-    bio: (u.bio ?? u.description ?? '').slice(0, 160),
-    verified: String(u.verified ?? false),
-    url: `https://twitter.com/${u.screenName ?? username}`,
-  };
+  return mapCliUser(u, 1);
+}
+
+/** Resolve a numeric rest_id → full profile (cookie-auth path). */
+export async function bridgeUserById(
+  restId: string, creds: { authToken: string; ct0: string }
+): Promise<XUser | null> {
+  const result = await runFetch<CliResponse<CliUser>>(creds, ['user-by-id', restId]);
+  if (!result.ok) return null;
+  const u = result.data;
+  if (!u) return null;
+  return mapCliUser(u, 1);
 }
 
 export async function bridgeTweet(
@@ -264,10 +285,19 @@ export async function bridgeListTweets(
   return (result.data ?? []).slice(0, limit).map((t, i) => mapCliTweet(t, i + 1));
 }
 
+export interface BridgeReplyResult {
+  id: string;
+  result: { tweet_id: string; url: string };
+  in_reply_to: {
+    tweet_id: string;
+    author: { id: string | null; username: string | null };
+  };
+}
+
 export async function bridgeReply(
   tweetId: string, text: string, creds: { authToken: string; ct0: string }
-): Promise<{ id: string }> {
-  const result = await runFetch<CliResponse<{ id: string }>>(creds, ['reply', tweetId, text]);
+): Promise<BridgeReplyResult> {
+  const result = await runFetch<CliResponse<BridgeReplyResult>>(creds, ['reply', tweetId, text]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Reply failed');
   return result.data;
 }
@@ -295,8 +325,8 @@ export async function bridgeUnbookmark(
 
 export async function bridgePost(
   text: string, creds: { authToken: string; ct0: string }
-): Promise<{ id: string }> {
-  const result = await runFetch<CliResponse<{ id: string }>>(creds, ['post', text]);
+): Promise<{ id: string; result?: { tweet_id: string; url: string } }> {
+  const result = await runFetch<CliResponse<{ id: string; result?: { tweet_id: string; url: string } }>>(creds, ['post', text]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Post failed');
   return result.data;
 }
@@ -314,17 +344,23 @@ export async function bridgeArticle(
 
 export async function bridgeQuote(
   tweetId: string, text: string, creds: { authToken: string; ct0: string }
-): Promise<{ id: string }> {
-  const result = await runFetch<CliResponse<{ id: string }>>(creds, ['quote', tweetId, text]);
+): Promise<{ id: string; result?: { tweet_id: string; url: string } }> {
+  const result = await runFetch<CliResponse<{ id: string; result?: { tweet_id: string; url: string } }>>(creds, ['quote', tweetId, text]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Quote failed');
   return result.data;
 }
 
+export interface BridgeLikeResult {
+  result: { tweet_id: string; liked: boolean };
+  author: import('../types/identity.js').UnifiedUser | null;
+}
+
 export async function bridgeLike(
   tweetId: string, creds: { authToken: string; ct0: string }
-): Promise<void> {
-  const result = await runFetch<CliResponse<unknown>>(creds, ['like', tweetId]);
+): Promise<BridgeLikeResult> {
+  const result = await runFetch<CliResponse<BridgeLikeResult>>(creds, ['like', tweetId]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Like failed');
+  return result.data;
 }
 
 export async function bridgeUnlike(
@@ -334,10 +370,16 @@ export async function bridgeUnlike(
   if (!result.ok) throw new Error(result.error?.message ?? 'Unlike failed');
 }
 
+export interface BridgeRetweetResult {
+  id: string;
+  result?: { tweet_id: string; url: string };
+  author: import('../types/identity.js').UnifiedUser | null;
+}
+
 export async function bridgeRetweet(
   tweetId: string, creds: { authToken: string; ct0: string }
-): Promise<{ id: string }> {
-  const result = await runFetch<CliResponse<{ id: string }>>(creds, ['retweet', tweetId]);
+): Promise<BridgeRetweetResult> {
+  const result = await runFetch<CliResponse<BridgeRetweetResult>>(creds, ['retweet', tweetId]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Retweet failed');
   return result.data;
 }
@@ -349,16 +391,30 @@ export async function bridgeUnretweet(
   if (!result.ok) throw new Error(result.error?.message ?? 'Unretweet failed');
 }
 
+/** Unified identity returned by the v1.1 friendships response. */
+interface BridgeFollowUser {
+  id?: string | null;
+  username?: string | null;
+  name?: string | null;
+  avatar_url?: string | null;
+  profile_url?: string | null;
+  bio?: string | null;
+  followers?: number | null;
+  verified?: boolean | null;
+}
+
 export async function bridgeFollow(
   username: string, creds: { authToken: string; ct0: string }
-): Promise<void> {
-  const result = await runFetch<CliResponse<unknown>>(creds, ['follow', username]);
+): Promise<{ following: boolean; user: UnifiedUser }> {
+  const result = await runFetch<CliResponse<{ following: boolean; user: BridgeFollowUser }>>(creds, ['follow', username]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Follow failed');
+  return { following: result.data.following, user: makeUser(result.data.user ?? {}) };
 }
 
 export async function bridgeUnfollow(
   username: string, creds: { authToken: string; ct0: string }
-): Promise<void> {
-  const result = await runFetch<CliResponse<unknown>>(creds, ['unfollow', username]);
+): Promise<{ following: boolean; user: UnifiedUser }> {
+  const result = await runFetch<CliResponse<{ following: boolean; user: BridgeFollowUser }>>(creds, ['unfollow', username]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Unfollow failed');
+  return { following: result.data.following, user: makeUser(result.data.user ?? {}) };
 }

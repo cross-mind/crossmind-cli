@@ -17,6 +17,20 @@ import {
   bridgeHome, bridgeSaved,
   type RedditCookieCreds,
 } from '../../http/reddit-bridge.js';
+import { makeUser, type UnifiedUser } from '../../types/identity.js';
+
+/**
+ * Build a unified author from the free fields on a Reddit listing/comment.
+ * Reddit listings carry `author` (handle) and `author_fullname` (the `t2_` user id);
+ * avatar/bio/followers are not free here, so they stay null and the resolver
+ * enriches via `reddit user`.
+ */
+function authorFromReddit(d: Record<string, unknown>): UnifiedUser {
+  return makeUser({
+    id: d['author_fullname'] ? String(d['author_fullname']) : null,
+    username: d['author'] ? String(d['author']) : null,
+  });
+}
 
 /** Convert stored cookie credentials to bridge format. */
 function cookieCreds(c: { session: string; modhash?: string; csrfToken?: string; loid?: string }, proxy?: string): RedditCookieCreds {
@@ -27,7 +41,7 @@ export interface RedditPost {
   rank: number;
   id: string;
   title: string;
-  author: string;
+  author: UnifiedUser;
   subreddit: string;
   score: number;
   comments: number;
@@ -41,7 +55,7 @@ export interface RedditPost {
 export interface RedditComment {
   rank: number;
   id: string;
-  author: string;
+  author: UnifiedUser;
   body: string;
   score: number;
   subreddit: string;
@@ -54,7 +68,7 @@ function mapPost(child: Record<string, unknown>, index: number): RedditPost {
     rank: index + 1,
     id: String(data['id'] ?? ''),
     title: String(data['title'] ?? '').slice(0, 150),
-    author: String(data['author'] ?? ''),
+    author: authorFromReddit(data),
     subreddit: String(data['subreddit'] ?? ''),
     score: Number(data['score'] ?? 0),
     comments: Number(data['num_comments'] ?? 0),
@@ -148,13 +162,13 @@ export interface RedditSubInfo {
   nsfw: boolean;
 }
 
-export interface RedditUserProfile {
+export interface RedditUserProfile extends UnifiedUser {
   rank: number;
-  username: string;
   karma_post: number;
   karma_comment: number;
   created_utc: number;
   is_mod: boolean;
+  /** Kept for template back-compat; same as profile_url. */
   url: string;
 }
 
@@ -212,6 +226,31 @@ export async function getSubredditInfo(
   };
 }
 
+/** Build a unified RedditUserProfile from a raw about.json `data` object. */
+function unifiedProfileFromReddit(d: Record<string, unknown>, username: string): RedditUserProfile {
+  const sub = (d['subreddit'] ?? {}) as Record<string, unknown>;
+  const name = String(d['name'] ?? username);
+  const id = d['id'] ? `t2_${d['id']}` : null;
+  const avatar = String(d['icon_img'] || d['snoovatar_img'] || '') || null;
+  return {
+    ...makeUser({
+      id,
+      username: name,
+      avatar_url: avatar,
+      profile_url: `https://reddit.com/u/${name}`,
+      bio: sub['public_description'] ? String(sub['public_description']).slice(0, 300).replace(/\n/g, ' ') : null,
+      followers: sub['subscribers'] != null ? Number(sub['subscribers']) : null,
+      verified: false,
+    }),
+    rank: 1,
+    karma_post: Number(d['link_karma'] ?? 0),
+    karma_comment: Number(d['comment_karma'] ?? 0),
+    created_utc: Number(d['created_utc'] ?? 0),
+    is_mod: Boolean(d['is_mod'] ?? false),
+    url: `https://reddit.com/u/${name}`,
+  };
+}
+
 /** Get a Reddit user's profile */
 export async function getRedditUserProfile(
   username: string,
@@ -228,16 +267,7 @@ export async function getRedditUserProfile(
     `${baseUrl}/user/${username}/about.json`,
     { headers }
   );
-  const d = data.data;
-  return {
-    rank: 1,
-    username: String(d['name'] ?? username),
-    karma_post: Number(d['link_karma'] ?? 0),
-    karma_comment: Number(d['comment_karma'] ?? 0),
-    created_utc: Number(d['created_utc'] ?? 0),
-    is_mod: Boolean(d['is_mod'] ?? false),
-    url: `https://reddit.com/u/${username}`,
-  };
+  return unifiedProfileFromReddit(data.data ?? {}, username);
 }
 
 /** Get a user's submitted posts */
@@ -278,7 +308,7 @@ export async function getUserComments(
       results.push({
         rank: results.length + 1,
         id: String(d['id'] ?? ''),
-        author: String(d['author'] ?? ''),
+        author: authorFromReddit(d),
         body: String(d['body'] ?? '').replace(/\n/g, ' ').slice(0, 200),
         score: Number(d['score'] ?? 0),
         subreddit: String(d['subreddit'] ?? ''),
@@ -333,7 +363,7 @@ export async function getPost(
       comments.push({
         rank: rank++,
         id: String(d['id'] ?? ''),
-        author: String(d['author'] ?? ''),
+        author: authorFromReddit(d),
         body: String(d['body'] ?? '').replace(/\n/g, ' ').slice(0, bodyLimit),
         score: Number(d['score'] ?? 0),
         subreddit: String(d['subreddit'] ?? ''),
@@ -423,7 +453,7 @@ export async function getPostComments(
       results.push({
         rank: rank++,
         id: String(d['id'] ?? ''),
-        author: String(d['author'] ?? ''),
+        author: authorFromReddit(d),
         body: String(d['body'] ?? '').replace(/\n/g, ' ').slice(0, 200),
         score: Number(d['score'] ?? 0),
         subreddit: String(d['subreddit'] ?? ''),

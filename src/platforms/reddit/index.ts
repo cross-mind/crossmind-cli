@@ -11,12 +11,19 @@ import {
   getUserPosts, getUserComments, getPost, getHomeFeed, getSaved,
 } from './read.js';
 import { submitComment, vote, saveItem, deleteItem, subscribeSubreddit, submitPost, submitTextPost, crosspost } from './write.js';
-import { printOutput } from '../../output/formatter.js';
+import type { RedditWriteResult } from './write.js';
+import { printOutput, printJsonResult, printJsonError } from '../../output/formatter.js';
 
 const POST_TEMPLATE = '{rank}. r/{subreddit} score:{score} comments:{comments} [{flair}] {title} — {url}';
-const COMMENT_TEMPLATE = '{rank}. u/{author} score:{score} — {body} {url}';
+const COMMENT_TEMPLATE = '{rank}. u/{author.username} score:{score} — {body} {url}';
 const SUBINFO_TEMPLATE = '{name} subscribers:{subscribers} active:{active_users} — {description} {url}';
 const USER_TEMPLATE = '{rank}. u/{username} post_karma:{karma_post} comment_karma:{karma_comment} — {url}';
+
+/** Drop the human-readable `message` line so it doesn't leak into --json output. */
+function stripMessage(r: RedditWriteResult): Omit<RedditWriteResult, 'message'> {
+  const { message, ...rest } = r; // eslint-disable-line @typescript-eslint/no-unused-vars
+  return rest;
+}
 
 export function registerReddit(program: Command): void {
   const reddit = program
@@ -53,6 +60,7 @@ Auth requirements:
         const items = await getSubreddit(subreddit, opts.sort as 'hot', limit, opts.time as 'day', opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, `reddit/r/${subreddit}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `reddit/r/${subreddit}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -78,6 +86,7 @@ Auth requirements:
         const items = await searchReddit(query, opts.sub, opts.sort as 'relevance', limit, opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, 'reddit/search', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, "reddit/search");
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -102,6 +111,7 @@ Auth requirements:
         const items = await getPostComments(subreddit, postId, limit, opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], COMMENT_TEMPLATE, `reddit/comments/${postId}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `reddit/comments/${postId}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -123,6 +133,7 @@ Auth requirements:
         const items = await getPopular(opts.sort as 'hot', limit, opts.time as 'day', opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, 'reddit/popular', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, "reddit/popular");
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -144,6 +155,7 @@ Auth requirements:
         const items = await getAll(opts.sort as 'hot', limit, opts.time as 'day', opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, 'reddit/all', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, "reddit/all");
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -161,6 +173,7 @@ Auth requirements:
         const info = await getSubredditInfo(subreddit, opts.account, opts.dataDir);
         printOutput([info] as unknown as Record<string, unknown>[], SUBINFO_TEMPLATE, `reddit/sub-info/${subreddit}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `reddit/sub-info/${subreddit}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -179,6 +192,7 @@ Auth requirements:
         const profile = await getRedditUserProfile(username, opts.account, opts.dataDir, opts.proxy);
         printOutput([profile] as unknown as Record<string, unknown>[], USER_TEMPLATE, `reddit/user/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `reddit/user/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -199,6 +213,7 @@ Auth requirements:
         const items = await getUserPosts(username, opts.sort as 'new', limit, opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, `reddit/user-posts/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `reddit/user-posts/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -218,6 +233,7 @@ Auth requirements:
         const items = await getUserComments(username, opts.sort as 'new', limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], COMMENT_TEMPLATE, `reddit/user-comments/${username}`, start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, `reddit/user-comments/${username}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -238,7 +254,7 @@ Auth requirements:
       try {
         const detail = await getPost(postId, opts.sort as 'best', limit, opts.account, opts.dataDir, opts.proxy, opts.full);
         if (opts.json) {
-          console.log(JSON.stringify(detail, null, 2));
+          printJsonResult(detail, `reddit/read/${postId}`, { startTime: start });
         } else {
           printOutput([detail.post] as unknown as Record<string, unknown>[], POST_TEMPLATE, `reddit/post/${postId}`, start, {});
           if (detail.post.selftext) {
@@ -249,6 +265,7 @@ Auth requirements:
           }
         }
       } catch (err) {
+        if (opts.json) printJsonError(err, `reddit/read/${postId}`);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -269,6 +286,7 @@ Auth requirements:
         const items = await getHomeFeed(opts.sort as 'hot', limit, opts.account, opts.dataDir, opts.proxy);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, 'reddit/home', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, "reddit/home");
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -287,6 +305,7 @@ Auth requirements:
         const items = await getSaved(limit, opts.account, opts.dataDir);
         printOutput(items as unknown as Record<string, unknown>[], POST_TEMPLATE, 'reddit/saved', start, { json: opts.json });
       } catch (err) {
+        if (opts.json) printJsonError(err, "reddit/saved");
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -301,11 +320,14 @@ Auth requirements:
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
     .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
-    .action(async (parentId: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (parentId: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string; json?: boolean }) => {
       try {
         const result = await submitComment(parentId, text, opts.account, opts.dataDir, !!opts.force, opts.proxy);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'reddit/comment');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'reddit/comment');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -317,11 +339,14 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
-    .action(async (id: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (id: string, opts: { account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       try {
         const result = await vote(id, 1, opts.account, opts.dataDir, opts.proxy);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'reddit/upvote');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'reddit/upvote');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -333,11 +358,14 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
-    .action(async (id: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (id: string, opts: { account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       try {
         const result = await vote(id, -1, opts.account, opts.dataDir, opts.proxy);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'reddit/downvote');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'reddit/downvote');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -349,11 +377,14 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
-    .action(async (id: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (id: string, opts: { account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       try {
         const result = await saveItem(id, opts.account, opts.dataDir, opts.proxy);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'reddit/save');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'reddit/save');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -365,11 +396,14 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
-    .action(async (subreddit: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (subreddit: string, opts: { account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       try {
         const result = await subscribeSubreddit(subreddit, 'sub', opts.account, opts.dataDir, opts.proxy);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'reddit/subscribe');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'reddit/subscribe');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -381,11 +415,14 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
-    .action(async (subreddit: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (subreddit: string, opts: { account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       try {
         const result = await subscribeSubreddit(subreddit, 'unsub', opts.account, opts.dataDir, opts.proxy);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'reddit/unsubscribe');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'reddit/unsubscribe');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -398,11 +435,14 @@ Auth requirements:
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
     .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
-    .action(async (subreddit: string, title: string, url: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (subreddit: string, title: string, url: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string; json?: boolean }) => {
       try {
         const result = await submitPost(subreddit, title, url, opts.account, opts.dataDir, !!opts.force, opts.proxy);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'reddit/post');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'reddit/post');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -415,11 +455,14 @@ Auth requirements:
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
     .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
-    .action(async (subreddit: string, title: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (subreddit: string, title: string, text: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string; json?: boolean }) => {
       try {
         const result = await submitTextPost(subreddit, title, text, opts.account, opts.dataDir, !!opts.force, opts.proxy);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'reddit/text-post');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'reddit/text-post');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -432,11 +475,14 @@ Auth requirements:
     .option('--data-dir <dir>', 'Data directory override')
     .option('-f, --force', 'Skip duplicate content check')
     .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
-    .action(async (targetSub: string, postId: string, title: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (targetSub: string, postId: string, title: string, opts: { account?: string; dataDir?: string; force?: boolean; proxy?: string; json?: boolean }) => {
       try {
         const result = await crosspost(targetSub, postId, title, opts.account, opts.dataDir, !!opts.force, opts.proxy);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'reddit/crosspost');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'reddit/crosspost');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
@@ -448,11 +494,14 @@ Auth requirements:
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
     .option('--proxy <url>', 'HTTP proxy URL (e.g. http://user:pass@host:port)')
-    .action(async (fullname: string, opts: { account?: string; dataDir?: string; proxy?: string }) => {
+    .option('--json', 'Output structured result as JSON')
+    .action(async (fullname: string, opts: { account?: string; dataDir?: string; proxy?: string; json?: boolean }) => {
       try {
         const result = await deleteItem(fullname, opts.account, opts.dataDir, opts.proxy);
-        console.log(result.message);
+        if (opts.json) printJsonResult(stripMessage(result), 'reddit/delete');
+        else console.log(result.message);
       } catch (err) {
+        if (opts.json) printJsonError(err, 'reddit/delete');
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
