@@ -11,6 +11,7 @@ import {
   buildAuthUrl, exchangeCode, captureCallback, type OAuthConfig,
 } from './oauth.js';
 import { saveCredential, loadCredential, resolveAccount } from './store.js';
+import { fetchPublicCredential, isPublicAllowed } from './public-accounts.js';
 
 // X OAuth 2.0 app credentials (public client - PKCE only, no secret)
 // Users can override via env vars
@@ -127,7 +128,8 @@ export async function saveBearerToken(
  */
 export async function loadXCredentials(
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  op?: string
 ): Promise<{ authToken?: string; ct0?: string; accessToken?: string; bearerToken?: string } | null> {
   const name = await resolveAccount('x', account, dataDir);
   const cred = await loadCredential('x', name, dataDir);
@@ -141,6 +143,13 @@ export async function loadXCredentials(
 
   // Return null only if all fields are empty
   if (!merged.authToken && !merged.ct0 && !merged.accessToken && !merged.bearerToken) {
+    // Fall back to the shared public account for anonymous public reads only.
+    if (isPublicAllowed('x', op)) {
+      const pub = await fetchPublicCredential('x');
+      if (pub?.authToken && pub?.ct0) {
+        return { authToken: pub.authToken, ct0: pub.ct0 };
+      }
+    }
     return null;
   }
   return merged;

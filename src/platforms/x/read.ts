@@ -115,7 +115,7 @@ export async function searchTweets(
   account?: string,
   dataDir?: string
 ): Promise<XTweet[]> {
-  const creds = await loadXCredentials(account, dataDir);
+  const creds = await loadXCredentials(account, dataDir, 'search');
 
   // Cookie auth → x-fetch.py bridge (Chrome TLS via curl_cffi)
   if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
@@ -156,7 +156,7 @@ export async function getUserTimeline(
   account?: string,
   dataDir?: string
 ): Promise<XTweet[]> {
-  const creds = await loadXCredentials(account, dataDir);
+  const creds = await loadXCredentials(account, dataDir, 'timeline');
 
   // Cookie auth → x-fetch.py bridge
   if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
@@ -190,7 +190,7 @@ export async function getUserProfile(
   account?: string,
   dataDir?: string
 ): Promise<XUser | null> {
-  const creds = await loadXCredentials(account, dataDir);
+  const creds = await loadXCredentials(account, dataDir, 'profile');
 
   // Cookie auth → x-fetch.py bridge
   if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
@@ -215,7 +215,7 @@ export async function getUserById(
   account?: string,
   dataDir?: string
 ): Promise<XUser | null> {
-  const creds = await loadXCredentials(account, dataDir);
+  const creds = await loadXCredentials(account, dataDir, 'user');
 
   // Cookie auth → x-fetch.py bridge
   if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
@@ -299,7 +299,7 @@ export async function getTweet(
   account?: string,
   dataDir?: string
 ): Promise<XTweetThread> {
-  const creds = await loadXCredentials(account, dataDir);
+  const creds = await loadXCredentials(account, dataDir, 'thread');
 
   // Cookie auth → x-fetch.py bridge
   if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
@@ -327,7 +327,7 @@ export async function getFollowers(
   account?: string,
   dataDir?: string
 ): Promise<XUser[]> {
-  const creds = await loadXCredentials(account, dataDir);
+  const creds = await loadXCredentials(account, dataDir, 'followers');
 
   if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
     return bridgeFollowers(username, limit, creds);
@@ -357,7 +357,7 @@ export async function getFollowing(
   account?: string,
   dataDir?: string
 ): Promise<XUser[]> {
-  const creds = await loadXCredentials(account, dataDir);
+  const creds = await loadXCredentials(account, dataDir, 'following');
 
   if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
     return bridgeFollowing(username, limit, creds);
@@ -459,7 +459,7 @@ export async function getLikes(
   account?: string,
   dataDir?: string
 ): Promise<XTweet[]> {
-  const creds = await loadXCredentials(account, dataDir);
+  const creds = await loadXCredentials(account, dataDir, 'likes');
   if (!creds?.accessToken) {
     throw new AuthError('Likes require OAuth. Set X_ACCESS_TOKEN or run: crossmind auth login x');
   }

@@ -113,7 +113,7 @@ export async function getSubreddit(
   dataDir?: string,
   proxy?: string
 ): Promise<RedditPost[]> {
-  const creds = await loadRedditCredentials(account, dataDir);
+  const creds = await loadRedditCredentials(account, dataDir, 'subreddit');
   if (creds?.type === 'cookie') {
     return bridgeSubreddit(subreddit, sort, limit, cookieCreds(creds, proxy));
   }
@@ -134,7 +134,7 @@ export async function searchReddit(
   dataDir?: string,
   proxy?: string
 ): Promise<RedditPost[]> {
-  const creds = await loadRedditCredentials(account, dataDir);
+  const creds = await loadRedditCredentials(account, dataDir, 'search');
   if (creds?.type === 'cookie') {
     return bridgeSearch(query, subreddit, sort, limit, cookieCreds(creds, proxy));
   }
@@ -258,7 +258,7 @@ export async function getRedditUserProfile(
   dataDir?: string,
   proxy?: string
 ): Promise<RedditUserProfile> {
-  const creds = await loadRedditCredentials(account, dataDir);
+  const creds = await loadRedditCredentials(account, dataDir, 'user-profile');
   if (creds?.type === 'cookie') {
     return bridgeUser(username, cookieCreds(creds, proxy));
   }
@@ -279,7 +279,7 @@ export async function getUserPosts(
   dataDir?: string,
   proxy?: string
 ): Promise<RedditPost[]> {
-  const creds = await loadRedditCredentials(account, dataDir);
+  const creds = await loadRedditCredentials(account, dataDir, 'user-posts');
   if (creds?.type === 'cookie') {
     return bridgeUserPosts(username, limit, cookieCreds(creds, proxy));
   }
@@ -330,7 +330,7 @@ export async function getPost(
   proxy?: string,
   full?: boolean
 ): Promise<RedditPostDetail> {
-  const creds = await loadRedditCredentials(account, dataDir);
+  const creds = await loadRedditCredentials(account, dataDir, 'post');
   if (creds?.type === 'cookie') {
     // bridge uses subreddit='' — reddit-fetch.py fetches from /comments/<id>.json
     const id = postId.replace(/^t3_/, '');
@@ -434,7 +434,7 @@ export async function getPostComments(
   dataDir?: string,
   proxy?: string
 ): Promise<RedditComment[]> {
-  const creds = await loadRedditCredentials(account, dataDir);
+  const creds = await loadRedditCredentials(account, dataDir, 'comments');
   if (creds?.type === 'cookie') {
     const detail = await bridgePostFetch(subreddit, postId, limit, cookieCreds(creds, proxy));
     return detail.comments;

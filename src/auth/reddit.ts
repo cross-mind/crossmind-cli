@@ -13,6 +13,7 @@ import {
   buildAuthUrl, exchangeCode, refreshToken, captureCallback, type OAuthConfig,
 } from './oauth.js';
 import { saveCredential, loadCredential, resolveAccount } from './store.js';
+import { fetchPublicCredential, isPublicAllowed } from './public-accounts.js';
 import { AuthError } from '../http/client.js';
 
 export const REDDIT_CLIENT_ID = process.env['REDDIT_CLIENT_ID'] ?? 'YOUR_REDDIT_CLIENT_ID';
@@ -98,11 +99,12 @@ export async function saveRedditCookies(
  */
 export async function loadRedditCredentials(
   account?: string,
-  dataDir?: string
+  dataDir?: string,
+  op?: string
 ): Promise<RedditCredentials> {
   const name = await resolveAccount('reddit', account, dataDir);
   const cred = await loadCredential('reddit', name, dataDir);
-  if (!cred) return null;
+  if (!cred) return publicRedditFallback(op);
 
   // Cookie auth wins if present
   if (cred.redditSession) {
@@ -132,6 +134,20 @@ export async function loadRedditCredentials(
     return { type: 'oauth', token: cred.accessToken };
   }
 
+  return publicRedditFallback(op);
+}
+
+/** Shared public-account fallback for anonymous public Reddit reads only. */
+async function publicRedditFallback(op?: string): Promise<RedditCredentials> {
+  if (!isPublicAllowed('reddit', op)) return null;
+  const pub = await fetchPublicCredential('reddit');
+  if (pub?.redditSession) {
+    return {
+      type: 'cookie',
+      session: pub.redditSession,
+      modhash: pub.redditModhash,
+    };
+  }
   return null;
 }
 
