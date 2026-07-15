@@ -69,7 +69,7 @@ Auth requirements:
   reddit
     .command('search <query> [limit]')
     .description('Search Reddit posts')
-    .option('--sub <subreddit>', 'Restrict search to a subreddit')
+    .option('--sub, --subreddit <subreddit>', 'Restrict search to a subreddit')
     .option('--sort <sort>', 'Sort: relevance, new, top, comments (default: relevance)', 'relevance')
     .option('--account <name>', 'Account to use')
     .option('--data-dir <dir>', 'Data directory override')
