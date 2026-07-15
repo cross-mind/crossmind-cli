@@ -59,11 +59,86 @@ except ImportError:
 
 import time
 
-_CT_VENV = "/root/.local/share/uv/tools/twitter-cli/lib/python3.11/site-packages"
 _client_transaction: Optional[Any] = None
 _ct_initialized = False
 _ct_cache_path = os.path.expanduser("~/.cache/x-fetch-ct.json")
 _CT_TTL = 3600  # 1 hour
+
+# twitter-cli bundles x_client_transaction (CT-id generation) and twitter_cli
+# (GraphQL bundle scan). Rather than hardcode one python minor version / user home
+# (brittle: silently disables the x-client-transaction-id header, which X now
+# enforces on SearchTimeline/Followers -> HTTP 404), discover the site-packages
+# robustly and fail loudly.
+_TWITTER_CLI_DEFAULT_VENV = "/root/.local/share/uv/tools/twitter-cli/lib/python3.11/site-packages"
+_twitter_cli_path_ready: Optional[bool] = None
+
+
+def _twitter_cli_site_packages_candidates() -> List[str]:
+    import glob
+    import subprocess
+
+    patterns: List[str] = []
+    override = os.environ.get("CROSSMIND_TWITTER_CLI_SITE_PACKAGES")
+    if override:
+        patterns.append(override)
+    try:
+        out = subprocess.run(["uv", "tool", "dir"], capture_output=True, text=True, timeout=5)
+        if out.returncode == 0 and out.stdout.strip():
+            patterns.append(
+                os.path.join(out.stdout.strip(), "twitter-cli", "lib", "python3.*", "site-packages")
+            )
+    except Exception:
+        pass
+    for base in (
+        os.path.expanduser("~/.local/share/uv/tools/twitter-cli/lib"),
+        "/root/.local/share/uv/tools/twitter-cli/lib",
+    ):
+        patterns.append(os.path.join(base, "python3.*", "site-packages"))
+    patterns.append(_TWITTER_CLI_DEFAULT_VENV)  # legacy hardcoded fallback
+
+    found: List[str] = []
+    for pat in patterns:
+        for path in sorted(glob.glob(pat), reverse=True):  # prefer newer python3.x
+            if path not in found and os.path.isdir(os.path.join(path, "x_client_transaction")):
+                found.append(path)
+    return found
+
+
+def _ensure_twitter_cli_on_path() -> bool:
+    """Make x_client_transaction / twitter_cli importable; cache the result.
+
+    Returns True if the dependency is importable (now or after path discovery).
+    Emits a one-time stderr warning when it cannot be found so the failure is not
+    silent.
+    """
+    global _twitter_cli_path_ready
+    if _twitter_cli_path_ready is not None:
+        return _twitter_cli_path_ready
+    try:
+        import x_client_transaction  # noqa: F401
+
+        _twitter_cli_path_ready = True
+        return True
+    except Exception:
+        pass
+    for sp in _twitter_cli_site_packages_candidates():
+        if sp not in sys.path:
+            sys.path.insert(0, sp)
+        try:
+            import x_client_transaction  # noqa: F401
+
+            _twitter_cli_path_ready = True
+            return True
+        except Exception:
+            continue
+    sys.stderr.write(
+        "crossmind x-fetch: x_client_transaction not importable; the "
+        "x-client-transaction-id header is disabled, so SearchTimeline/Followers "
+        "(x search / x followers / x mentions) may return HTTP 404. Install "
+        "twitter-cli or set CROSSMIND_TWITTER_CLI_SITE_PACKAGES.\n"
+    )
+    _twitter_cli_path_ready = False
+    return False
 
 
 def _init_client_transaction() -> None:
@@ -78,8 +153,7 @@ def _init_client_transaction() -> None:
             with open(_ct_cache_path, encoding="utf-8") as f:
                 cached = json.load(f)
             if time.time() - cached.get("ts", 0) < _CT_TTL:
-                if _CT_VENV not in sys.path:
-                    sys.path.insert(0, _CT_VENV)
+                _ensure_twitter_cli_on_path()
                 import bs4
                 from x_client_transaction import ClientTransaction
                 _client_transaction = ClientTransaction(
@@ -92,8 +166,7 @@ def _init_client_transaction() -> None:
 
     # Fetch fresh
     try:
-        if _CT_VENV not in sys.path:
-            sys.path.insert(0, _CT_VENV)
+        _ensure_twitter_cli_on_path()
         import bs4
         from x_client_transaction import ClientTransaction
         from x_client_transaction.utils import generate_headers as _ct_gen_headers, get_ondemand_file_url
@@ -157,7 +230,6 @@ _OPENAPI_URL = (
 )
 _QUERY_ID_CACHE_PATH = os.path.expanduser("~/.cache/x-fetch-query-ids.json")
 _QUERY_ID_TTL = 86400  # 24 hours
-_TWITTER_CLI_VENV = "/root/.local/share/uv/tools/twitter-cli/lib/python3.11/site-packages"
 
 # Hardcoded fallbacks — updated from fa0311 snapshot, used only when all
 # network sources fail. Values may rotate; the dynamic system keeps them fresh.
@@ -380,8 +452,7 @@ def _refresh_from_bundles() -> None:
     Also scans the Premium-gated TwitterArticles lazy bundle for article ops.
     """
     try:
-        if _TWITTER_CLI_VENV not in sys.path:
-            sys.path.insert(0, _TWITTER_CLI_VENV)
+        _ensure_twitter_cli_on_path()
         from twitter_cli.graphql import _scan_bundles, _cached_query_ids  # type: ignore
         def _fetch(url: str, headers: Optional[Dict[str, str]] = None) -> str:
             r = _get_session().get(url, headers=headers or {}, timeout=15)
