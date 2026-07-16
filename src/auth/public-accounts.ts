@@ -33,6 +33,10 @@ const PUBLIC_OPS: Record<string, ReadonlySet<string>> = {
     'subreddit', 'search', 'popular', 'all', 'sub-info',
     'user-profile', 'user-posts', 'user-comments', 'post', 'comments',
   ]),
+  // Product Hunt has no personal identity concept at all in this CLI (a
+  // Developer Token is app-level, not user-level), so every read op is
+  // account-agnostic and eligible for the shared public account.
+  ph: new Set(['top', 'search']),
 };
 
 export function isPublicAllowed(provider: string, op: string | undefined): boolean {
@@ -116,6 +120,12 @@ export async function fetchPublicCredential(provider: string): Promise<Credentia
           name: '__public__',
           redditSession: secrets['session'],
           redditModhash: secrets['modhash'],
+        };
+      } else if (provider === 'ph') {
+        cred = {
+          platform: 'ph',
+          name: '__public__',
+          apiToken: secrets['api_token'],
         };
       }
     }

@@ -329,6 +329,51 @@ describe('auth/credential priority (public account over own OAuth)', () => {
     const result = await loadRedditCredentials('oauth-fallback', TEST_DIR, 'search');
     assert.deepEqual(result, { type: 'oauth', token: 'fallback-oauth' });
   });
+
+  test('ph: own token wins outright, public account never consulted', async () => {
+    clearPublicAccountEnv();
+    const { saveCredential } = await import('../src/auth/store.js');
+    const { loadProductHuntToken } = await import('../src/auth/producthunt.js');
+    await saveCredential({ platform: 'ph', name: 'own-token', apiToken: 'own-ph-token' }, TEST_DIR);
+
+    const result = await loadProductHuntToken('own-token', TEST_DIR, 'top');
+    assert.equal(result, 'own-ph-token');
+  });
+
+  test('ph: no own token, allowlisted op — falls back to the shared public account', async () => {
+    const { loadProductHuntToken } = await import('../src/auth/producthunt.js');
+
+    process.env['CROSSMIND_API_BASE'] = 'http://crossmind-test.local';
+    process.env['CROSSMIND_PUBLIC_TOKEN'] = 'test-public-token-ph';
+    const { _resetPublicCache } = await import('../src/auth/public-accounts.js');
+    _resetPublicCache();
+
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    mockAgent
+      .get('http://crossmind-test.local')
+      .intercept({ path: '/internal/public-accounts/exchange', method: 'POST' })
+      .reply(200, buildExchangeEnvelope('test-public-token-ph', 'ph', { api_token: 'pub-ph-token' }));
+
+    try {
+      const result = await loadProductHuntToken('no-such-account', TEST_DIR, 'top');
+      assert.equal(result, 'pub-ph-token');
+    } finally {
+      setGlobalDispatcher(originalDispatcher);
+      _resetPublicCache();
+      restorePublicAccountEnv();
+    }
+  });
+
+  test('ph: no own token, public unavailable — no third tier, returns undefined', async () => {
+    // Unlike x/reddit, ph has no OAuth fallback tier at all.
+    clearPublicAccountEnv();
+    const { loadProductHuntToken } = await import('../src/auth/producthunt.js');
+
+    const result = await loadProductHuntToken('no-such-account-either', TEST_DIR, 'top');
+    assert.equal(result, undefined);
+  });
 });
 
 // ── OAuth helpers ─────────────────────────────────────────────────────────

@@ -1,14 +1,15 @@
 /**
  * Product Hunt platform adapter.
  * Uses the Product Hunt GraphQL API v2.
- * Requires a developer token (OAuth client credentials).
- * Auth: crossmind auth login ph --token <your-token>
+ * Prefers the platform-provided shared Developer Token (no setup needed);
+ * falls back to your own token if you've configured one:
+ * crossmind auth login ph --token <your-token>
  */
 
 import { Command } from 'commander';
 import { request } from '../../http/client.js';
 import { printOutput } from '../../output/formatter.js';
-import { loadCredential, resolveAccount } from '../../auth/store.js';
+import { loadProductHuntToken } from '../../auth/producthunt.js';
 
 const PH_API = 'https://api.producthunt.com/v2/api/graphql';
 
@@ -21,16 +22,6 @@ interface PHPost {
   url: string;
   topics: string;
   created_at: string;
-}
-
-async function getPhToken(account?: string, dataDir?: string): Promise<string | undefined> {
-  try {
-    const name = await resolveAccount('ph', account, dataDir);
-    const cred = await loadCredential('ph', name, dataDir);
-    return cred?.apiToken;
-  } catch {
-    return undefined;
-  }
 }
 
 async function fetchPhPosts(
@@ -153,12 +144,12 @@ export function registerProductHunt(program: Command): void {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
       try {
-        const token = await getPhToken(opts.account, opts.dataDir);
+        const token = await loadProductHuntToken(opts.account, opts.dataDir, 'top');
         const items = await fetchPhPostsByDate(token, opts.date, limit);
         printOutput(items as unknown as Record<string, unknown>[], TEMPLATE, 'ph/top', start, { json: opts.json });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-        console.error('Note: Product Hunt API requires a developer token. Run: crossmind auth login ph --token <your-token>');
+        console.error('Note: if this keeps failing, you can set your own token with: crossmind auth login ph --token <your-token>');
         process.exit(1);
       }
     });
@@ -173,7 +164,7 @@ export function registerProductHunt(program: Command): void {
       const start = Date.now();
       const limit = limitArg ? parseInt(limitArg, 10) : 20;
       try {
-        const token = await getPhToken(opts.account, opts.dataDir);
+        const token = await loadProductHuntToken(opts.account, opts.dataDir, 'search');
         const gqlQuery = `
           query {
             posts(first: ${Math.min(limit, 50)}, query: ${JSON.stringify(query)}) {
