@@ -68,23 +68,31 @@ async function readConfig(dataDir: string): Promise<Config> {
   }
 }
 
-/** Save (create or overwrite) a credential, encrypted at rest. */
+/**
+ * Save (create or update) a credential, encrypted at rest.
+ * Merges with any existing stored record for the same platform+name so that
+ * saving one credential type (e.g. a bearer token) never wipes previously
+ * stored fields of another type (e.g. cookie authToken/ct0) on the same account.
+ */
 export async function saveCredential(cred: Credential, dataDir?: string): Promise<void> {
   const dir = getDataDir(dataDir);
   const encFile = encPath(cred.platform, cred.name, dir);
   await fs.mkdir(path.dirname(encFile), { recursive: true });
 
+  const existing = await loadCredential(cred.platform, cred.name, dataDir);
+  const merged: Credential = { ...existing, ...cred };
+
   const { key, salt } = await getProfileKey(dir);
   if (!key) {
     warnPlaintextOnce();
     // Plaintext fallback: write .json, remove any stale .enc
-    await fs.writeFile(credPath(cred.platform, cred.name, dir), JSON.stringify(cred, null, 2));
+    await fs.writeFile(credPath(cred.platform, cred.name, dir), JSON.stringify(merged, null, 2));
     await fs.rm(encFile, { force: true });
     return;
   }
 
   const profileId = profileIdOf(cred.platform, cred.name);
-  const envelope = encryptProfile(JSON.stringify(cred), key, salt, profileId);
+  const envelope = encryptProfile(JSON.stringify(merged), key, salt, profileId);
   await fs.writeFile(encFile, envelope, { mode: 0o600 });
   try { await fs.chmod(encFile, 0o600); } catch { /* non-POSIX */ }
   // Drop any legacy plaintext file for this account
