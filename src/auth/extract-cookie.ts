@@ -5,7 +5,7 @@
  *   1. CDP (automatic) — connects to an already-running Chrome via CDP
  *      (PLAYWRIGHT_MCP_CDP_ENDPOINT or derived from STEEL_LOCAL_URLS).
  *      Reads cookies directly from the running browser's in-memory state.
- *      This is the preferred path in the CrossMind agent runtime because:
+ *      Tried regardless of --headed, since it's strictly lock-free:
  *        - No profile lock conflicts
  *        - No SQLite encryption to deal with
  *        - Reads live in-memory cookies immediately after user login
@@ -14,6 +14,9 @@
  *      Fails fast (throws ExtractCookieLoginRequired) when not logged in.
  *   3. Headed — opens a visible browser window for first-time / re-login.
  *      Waits for the user to complete login, then saves cookies.
+ *      Still tries CDP first (see 1); only falls through to opening a
+ *      profile-backed browser window when CDP is unavailable or the running
+ *      browser isn't logged in to this platform yet.
  *
  * Profile directory: ~/.config/crossmind/browser-profiles/<platform>/
  * Keeping a persistent profile means the user only needs to log in once;
@@ -200,12 +203,63 @@ function resolveProfileDir(platformKey: string, explicit?: string): string {
 }
 
 /**
- * Check if profile is locked by another browser instance.
- * Returns true if locked (in use), false if available.
+ * Check if profile is locked by another *live* browser instance.
+ *
+ * A SingletonLock left behind by a crashed/killed Chrome (SIGKILL, container
+ * restart, etc.) is indistinguishable from a genuine lock by existence alone.
+ * This inspects the PID encoded in the lock symlink and treats a dead PID as
+ * stale: it auto-cleans the leftover Singleton* files and reports the profile
+ * as free. Returns true only when the owning process is confirmed alive.
  */
-function isProfileLocked(profileDir: string): boolean {
+export function isProfileLocked(profileDir: string): boolean {
   const lockFile = path.join(profileDir, 'SingletonLock');
-  return fs.existsSync(lockFile);
+  if (!fs.existsSync(lockFile)) return false;
+
+  const pid = readLockOwnerPid(lockFile);
+  // Can't determine the owning PID (unexpected lock format) — be
+  // conservative and treat it as locked rather than risk clobbering a live
+  // browser's profile.
+  if (pid === undefined) return true;
+  if (isPidAlive(pid)) return true;
+
+  // Owning process is dead — the lock is stale. Clean it up and report free.
+  cleanStaleLockFiles(profileDir);
+  return false;
+}
+
+/** Chromium's SingletonLock is a symlink whose target ends in "-<pid>". */
+function readLockOwnerPid(lockFile: string): number | undefined {
+  try {
+    const target = fs.readlinkSync(lockFile);
+    const match = target.match(/-(\d+)$/);
+    return match ? Number(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Signal-probe a PID without actually sending a signal (kill(pid, 0)). */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // ESRCH = no such process (dead). Anything else (e.g. EPERM = alive but
+    // owned by another user) is treated conservatively as still alive.
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/** Best-effort removal of Chromium's Singleton* lock files for a stale profile. */
+function cleanStaleLockFiles(profileDir: string): void {
+  for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    try {
+      fs.rmSync(path.join(profileDir, name), { force: true });
+    } catch {
+      // Best-effort — a failed removal just falls back to the existing
+      // "locked by another browser instance" error on the next attempt.
+    }
+  }
 }
 
 /**
@@ -246,21 +300,33 @@ export async function extractAndSaveCookies(
   // ── CDP path: preferred in CrossMind agent runtime ───────────────────────
   // When a running Chrome is accessible via CDP (PLAYWRIGHT_MCP_CDP_ENDPOINT
   // or STEEL_LOCAL_URLS), read cookies directly from its in-memory state.
-  // This avoids profile lock conflicts and SQLite encryption entirely.
-  if (!headed) {
-    const cdpEndpoint = resolveCdpEndpoint();
-    if (cdpEndpoint) {
-      try {
-        const found = await extractViaCdp(target, accountName, dataDir, cdpEndpoint);
-        if (found) return;
-        // Cookies not present in running browser — user may not be logged in
-        throw new ExtractCookieLoginRequired(platformKey);
-      } catch (err) {
-        if (err instanceof ExtractCookieLoginRequired) throw err;
-        // CDP connection failed (e.g. not in CrossMind runtime) — fall through
+  // This avoids profile lock conflicts and SQLite encryption entirely — and
+  // is tried regardless of --headed, because the profile directory a headed
+  // launch would open is frequently the very same profile the CDP-connected
+  // browser already has locked (e.g. after a request_browser_takeover login),
+  // which is what produces the "profile is locked" failure this path exists
+  // to avoid.
+  const cdpEndpoint = resolveCdpEndpoint();
+  if (cdpEndpoint) {
+    try {
+      const found = await extractViaCdp(target, accountName, dataDir, cdpEndpoint);
+      if (found) return;
+      // Cookies not present in the running browser yet. In headless mode
+      // there is no other path to a fresh login, so this is fatal, same as
+      // before. In headed mode, fall through to open a visible browser for
+      // login instead of throwing straight back the same "try --headed"
+      // error the caller already satisfied.
+      if (!headed) throw new ExtractCookieLoginRequired(platformKey);
+    } catch (err) {
+      if (err instanceof ExtractCookieLoginRequired) {
+        if (!headed) throw err;
+        // headed=true: fall through to the profile-based headed flow below.
       }
+      // CDP connection failed (e.g. not in CrossMind runtime) — fall through
+      // to the profile-based path below.
     }
   }
+
 
   // ── Profile path: local Chrome with persistent profile ───────────────────
   const profile = resolveProfileDir(platformKey, profileDir);

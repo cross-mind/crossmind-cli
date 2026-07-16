@@ -116,15 +116,16 @@ export async function saveBearerToken(
 
 /**
  * Load X credentials for an account.
- * File-stored credentials take priority; env vars fill in any gaps.
  *
- * Env var overrides:
- *   X_AUTH_TOKEN   → authToken (cookie)
- *   X_CT0          → ct0 (cookie CSRF)
- *   X_ACCESS_TOKEN → accessToken (OAuth PKCE user token)
- *
- * This means CrossMind-injected OAuth tokens are picked up automatically
- * without needing to write them to the credential file.
+ * Resolution order (highest priority first):
+ *   1. Cookie session — the caller's own stored/env-injected auth_token+ct0.
+ *      Env var overrides: X_AUTH_TOKEN → authToken, X_CT0 → ct0.
+ *   2. Shared public account cookie session — only for allowlisted anonymous
+ *      public reads (see isPublicAllowed), and only when tier 1 is absent.
+ *      This keeps OAuth quota reserved for identity-tied/write operations
+ *      instead of spending it on account-agnostic queries.
+ *   3. OAuth — accessToken (file or X_ACCESS_TOKEN env var) or bearerToken.
+ *      Lowest priority; used only when neither cookie tier is available.
  */
 export async function loadXCredentials(
   account?: string,
@@ -134,23 +135,32 @@ export async function loadXCredentials(
   const name = await resolveAccount('x', account, dataDir);
   const cred = await loadCredential('x', name, dataDir);
 
-  const merged = {
-    authToken:   cred?.authToken   ?? process.env['X_AUTH_TOKEN'],
-    ct0:         cred?.ct0         ?? process.env['X_CT0'],
+  // Tier 1: the caller's own cookie session.
+  const ownCookie = {
+    authToken: cred?.authToken ?? process.env['X_AUTH_TOKEN'],
+    ct0:       cred?.ct0       ?? process.env['X_CT0'],
+  };
+  if (ownCookie.authToken && ownCookie.ct0) {
+    return ownCookie;
+  }
+
+  // Tier 2: the shared public account, for allowlisted anonymous public
+  // reads only.
+  if (isPublicAllowed('x', op)) {
+    const pub = await fetchPublicCredential('x');
+    if (pub?.authToken && pub?.ct0) {
+      return { authToken: pub.authToken, ct0: pub.ct0 };
+    }
+  }
+
+  // Tier 3: OAuth-derived credentials.
+  const oauth = {
     accessToken: cred?.accessToken ?? process.env['X_ACCESS_TOKEN'],
     bearerToken: cred?.bearerToken,
   };
-
-  // Return null only if all fields are empty
-  if (!merged.authToken && !merged.ct0 && !merged.accessToken && !merged.bearerToken) {
-    // Fall back to the shared public account for anonymous public reads only.
-    if (isPublicAllowed('x', op)) {
-      const pub = await fetchPublicCredential('x');
-      if (pub?.authToken && pub?.ct0) {
-        return { authToken: pub.authToken, ct0: pub.ct0 };
-      }
-    }
-    return null;
+  if (oauth.accessToken || oauth.bearerToken) {
+    return oauth;
   }
-  return merged;
+
+  return null;
 }

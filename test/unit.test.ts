@@ -5,6 +5,10 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as crypto from 'node:crypto';
+import { MockAgent, setGlobalDispatcher, getGlobalDispatcher } from 'undici';
 
 // ── Formatter ─────────────────────────────────────────────────────────────
 
@@ -119,6 +123,211 @@ describe('auth/store', () => {
     await removeCredential('bsky', 'tobedeleted', TEST_DIR);
     const cred = await loadCredential('bsky', 'tobedeleted', TEST_DIR);
     assert.equal(cred, null);
+  });
+});
+
+// ── Extract-cookie profile lock ──────────────────────────────────────────
+
+describe('auth/extract-cookie (profile lock)', () => {
+  const LOCK_TEST_DIR = `/tmp/crossmind-lock-test-${Date.now()}`;
+
+  // Real Chromium SingletonLock symlinks point at a dangling "<hostname>-<pid>"
+  // target that never exists as a real file — but Node's fs.existsSync follows
+  // symlinks and requires the target to resolve, so to exercise isProfileLocked
+  // in a test we point the symlink at a dummy file with that exact name instead.
+  // (isProfileLocked only ever reads the pid back out of the link text itself,
+  // via readlinkSync, so the target's contents are irrelevant to the pid logic
+  // under test — only its existence, which existsSync requires.)
+  function writeLockSymlink(profileDir: string, pid: number): void {
+    const targetName = `test-host-${pid}`;
+    fs.writeFileSync(path.join(profileDir, targetName), '');
+    fs.symlinkSync(targetName, path.join(profileDir, 'SingletonLock'));
+  }
+
+  test('isProfileLocked: false when no lock file exists', async () => {
+    const { isProfileLocked } = await import('../src/auth/extract-cookie.js');
+    const profileDir = path.join(LOCK_TEST_DIR, 'no-lock');
+    fs.mkdirSync(profileDir, { recursive: true });
+
+    assert.equal(isProfileLocked(profileDir), false);
+  });
+
+  test('isProfileLocked: true when the owning process is alive', async () => {
+    const { isProfileLocked } = await import('../src/auth/extract-cookie.js');
+    const profileDir = path.join(LOCK_TEST_DIR, 'live-lock');
+    fs.mkdirSync(profileDir, { recursive: true });
+    // Our own process is definitely alive.
+    writeLockSymlink(profileDir, process.pid);
+
+    assert.equal(isProfileLocked(profileDir), true);
+  });
+
+  test('isProfileLocked: stale lock (dead pid) is auto-cleaned and reports free', async () => {
+    const { isProfileLocked } = await import('../src/auth/extract-cookie.js');
+    const profileDir = path.join(LOCK_TEST_DIR, 'stale-lock');
+    fs.mkdirSync(profileDir, { recursive: true });
+    // PID 1 is `init`/launchd — always running but never owned by us, so we'd
+    // hit EPERM there. Use a very high, essentially-guaranteed-unused PID
+    // instead to reliably hit ESRCH (no such process).
+    const deadPid = 999999;
+    writeLockSymlink(profileDir, deadPid);
+    fs.writeFileSync(path.join(profileDir, 'SingletonCookie'), '');
+    fs.writeFileSync(path.join(profileDir, 'SingletonSocket'), '');
+
+    assert.equal(isProfileLocked(profileDir), false);
+    assert.equal(fs.existsSync(path.join(profileDir, 'SingletonLock')), false);
+    assert.equal(fs.existsSync(path.join(profileDir, 'SingletonCookie')), false);
+    assert.equal(fs.existsSync(path.join(profileDir, 'SingletonSocket')), false);
+  });
+});
+
+// ── Credential priority: own cookie > public account > own OAuth ──────────
+
+describe('auth/credential priority (public account over own OAuth)', () => {
+  const TEST_DIR = `/tmp/crossmind-priority-test-${Date.now()}`;
+  const originalDispatcher = getGlobalDispatcher();
+  const originalApiBase = process.env['CROSSMIND_API_BASE'];
+  const originalPublicToken = process.env['CROSSMIND_PUBLIC_TOKEN'];
+
+  function clearPublicAccountEnv(): void {
+    delete process.env['CROSSMIND_API_BASE'];
+    delete process.env['CROSSMIND_PUBLIC_TOKEN'];
+  }
+
+  function restorePublicAccountEnv(): void {
+    if (originalApiBase !== undefined) process.env['CROSSMIND_API_BASE'] = originalApiBase;
+    else delete process.env['CROSSMIND_API_BASE'];
+    if (originalPublicToken !== undefined) process.env['CROSSMIND_PUBLIC_TOKEN'] = originalPublicToken;
+    else delete process.env['CROSSMIND_PUBLIC_TOKEN'];
+  }
+
+  // Mirrors the backend's encryption side of decryptEnvelope() in
+  // src/auth/public-accounts.ts, so the mocked exchange response is a
+  // genuine envelope the CLI's own decrypt path will accept.
+  function buildExchangeEnvelope(token: string, provider: string, secrets: Record<string, string>) {
+    const salt = crypto.randomBytes(16);
+    const key = Buffer.from(
+      crypto.hkdfSync('sha256', Buffer.from(token, 'utf8'), salt, 'crossmind-public-accounts-v1', 32),
+    );
+    const nonce = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
+    cipher.setAAD(Buffer.from(provider, 'utf8'));
+    const ciphertext = Buffer.concat([cipher.update(JSON.stringify(secrets), 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return {
+      alg: 'AES-256-GCM',
+      kdf: 'hkdf-sha256',
+      salt: salt.toString('base64'),
+      nonce: nonce.toString('base64'),
+      ciphertext: ciphertext.toString('base64'),
+      tag: tag.toString('base64'),
+    };
+  }
+
+  test('x: own cookie session wins outright, no public/OAuth fields leak in', async () => {
+    clearPublicAccountEnv();
+    const { saveCredential } = await import('../src/auth/store.js');
+    const { loadXCredentials } = await import('../src/auth/x.js');
+    await saveCredential(
+      { platform: 'x', name: 'own-cookie', authToken: 'own-auth', ct0: 'own-ct0', accessToken: 'own-oauth' },
+      TEST_DIR,
+    );
+
+    const result = await loadXCredentials('own-cookie', TEST_DIR, 'search');
+    assert.deepEqual(result, { authToken: 'own-auth', ct0: 'own-ct0' });
+  });
+
+  test('x: no own cookie, allowlisted op — public account preferred over own OAuth', async () => {
+    const { saveCredential } = await import('../src/auth/store.js');
+    const { loadXCredentials } = await import('../src/auth/x.js');
+    await saveCredential({ platform: 'x', name: 'own-oauth-only', accessToken: 'own-oauth-token' }, TEST_DIR);
+
+    process.env['CROSSMIND_API_BASE'] = 'http://crossmind-test.local';
+    process.env['CROSSMIND_PUBLIC_TOKEN'] = 'test-public-token-x';
+    const { _resetPublicCache } = await import('../src/auth/public-accounts.js');
+    _resetPublicCache();
+
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    mockAgent
+      .get('http://crossmind-test.local')
+      .intercept({ path: '/internal/public-accounts/exchange', method: 'POST' })
+      .reply(200, buildExchangeEnvelope('test-public-token-x', 'x', { auth_token: 'pub-auth', ct0: 'pub-ct0' }));
+
+    try {
+      const result = await loadXCredentials('own-oauth-only', TEST_DIR, 'search');
+      assert.deepEqual(result, { authToken: 'pub-auth', ct0: 'pub-ct0' });
+    } finally {
+      setGlobalDispatcher(originalDispatcher);
+      _resetPublicCache();
+      restorePublicAccountEnv();
+    }
+  });
+
+  test('x: no own cookie, public unavailable — falls back to own OAuth', async () => {
+    clearPublicAccountEnv();
+    const { saveCredential } = await import('../src/auth/store.js');
+    const { loadXCredentials } = await import('../src/auth/x.js');
+    await saveCredential({ platform: 'x', name: 'oauth-fallback', accessToken: 'fallback-oauth' }, TEST_DIR);
+
+    const result = await loadXCredentials('oauth-fallback', TEST_DIR, 'search');
+    assert.equal(result?.accessToken, 'fallback-oauth');
+    assert.equal(result?.authToken, undefined);
+  });
+
+  test('reddit: own cookie session wins outright', async () => {
+    clearPublicAccountEnv();
+    const { saveCredential } = await import('../src/auth/store.js');
+    const { loadRedditCredentials } = await import('../src/auth/reddit.js');
+    await saveCredential(
+      { platform: 'reddit', name: 'own-cookie', redditSession: 'own-session', accessToken: 'own-oauth' },
+      TEST_DIR,
+    );
+
+    const result = await loadRedditCredentials('own-cookie', TEST_DIR, 'search');
+    assert.deepEqual(result, { type: 'cookie', session: 'own-session', modhash: undefined, csrfToken: undefined, loid: undefined });
+  });
+
+  test('reddit: no own cookie, allowlisted op — public account preferred over own OAuth', async () => {
+    const { saveCredential } = await import('../src/auth/store.js');
+    const { loadRedditCredentials } = await import('../src/auth/reddit.js');
+    await saveCredential({ platform: 'reddit', name: 'own-oauth-only', accessToken: 'own-oauth-token' }, TEST_DIR);
+
+    process.env['CROSSMIND_API_BASE'] = 'http://crossmind-test.local';
+    process.env['CROSSMIND_PUBLIC_TOKEN'] = 'test-public-token-reddit';
+    const { _resetPublicCache } = await import('../src/auth/public-accounts.js');
+    _resetPublicCache();
+
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    mockAgent
+      .get('http://crossmind-test.local')
+      .intercept({ path: '/internal/public-accounts/exchange', method: 'POST' })
+      .reply(
+        200,
+        buildExchangeEnvelope('test-public-token-reddit', 'reddit', { session: 'pub-session', modhash: 'pub-modhash' }),
+      );
+
+    try {
+      const result = await loadRedditCredentials('own-oauth-only', TEST_DIR, 'search');
+      assert.deepEqual(result, { type: 'cookie', session: 'pub-session', modhash: 'pub-modhash' });
+    } finally {
+      setGlobalDispatcher(originalDispatcher);
+      _resetPublicCache();
+      restorePublicAccountEnv();
+    }
+  });
+
+  test('reddit: no own cookie, public unavailable — falls back to own OAuth', async () => {
+    clearPublicAccountEnv();
+    const { saveCredential } = await import('../src/auth/store.js');
+    const { loadRedditCredentials } = await import('../src/auth/reddit.js');
+    await saveCredential({ platform: 'reddit', name: 'oauth-fallback', accessToken: 'fallback-oauth' }, TEST_DIR);
+
+    const result = await loadRedditCredentials('oauth-fallback', TEST_DIR, 'search');
+    assert.deepEqual(result, { type: 'oauth', token: 'fallback-oauth' });
   });
 });
 

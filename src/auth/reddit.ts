@@ -2,9 +2,10 @@
  * Reddit authentication.
  *
  * Auth priority:
- *   1. Cookie (reddit_session)  → www.reddit.com JSON API with session cookie
- *   2. OAuth 2.0 access token   → oauth.reddit.com with Bearer token
- *   3. No credentials           → www.reddit.com public JSON API
+ *   1. Cookie (reddit_session)       → www.reddit.com JSON API with session cookie
+ *   2. Shared public account cookie  → allowlisted anonymous public reads only
+ *   3. OAuth 2.0 access token        → oauth.reddit.com with Bearer token
+ *   4. No credentials                → www.reddit.com public JSON API
  */
 
 import open from 'open';
@@ -95,7 +96,10 @@ export async function saveRedditCookies(
 
 /**
  * Load Reddit credentials, returning the highest-priority auth method available.
- * Priority: cookie (reddit_session) > OAuth access token > null (no-auth)
+ * Priority: own cookie session > shared public account (allowlisted ops only)
+ * > own OAuth access token > null (no-auth). The public account sits ahead of
+ * the caller's own OAuth token so account-agnostic queries don't spend OAuth
+ * quota that identity-tied/write operations may still need.
  */
 export async function loadRedditCredentials(
   account?: string,
@@ -104,10 +108,9 @@ export async function loadRedditCredentials(
 ): Promise<RedditCredentials> {
   const name = await resolveAccount('reddit', account, dataDir);
   const cred = await loadCredential('reddit', name, dataDir);
-  if (!cred) return publicRedditFallback(op);
 
-  // Cookie auth wins if present
-  if (cred.redditSession) {
+  // Tier 1: the caller's own cookie session.
+  if (cred?.redditSession) {
     return {
       type: 'cookie',
       session: cred.redditSession,
@@ -117,8 +120,13 @@ export async function loadRedditCredentials(
     };
   }
 
-  // OAuth access token
-  if (cred.accessToken) {
+  // Tier 2: the shared public account, for allowlisted anonymous public
+  // reads only.
+  const pub = await publicRedditFallback(op);
+  if (pub) return pub;
+
+  // Tier 3: the caller's own OAuth access token.
+  if (cred?.accessToken) {
     // Refresh if expired (with 60s buffer)
     if (cred.expiresAt && Date.now() > cred.expiresAt - 60_000 && cred.refreshToken) {
       const tokens = await refreshToken(REDDIT_OAUTH_CONFIG, cred.refreshToken);
@@ -134,7 +142,7 @@ export async function loadRedditCredentials(
     return { type: 'oauth', token: cred.accessToken };
   }
 
-  return publicRedditFallback(op);
+  return null;
 }
 
 /** Shared public-account fallback for anonymous public Reddit reads only. */
