@@ -135,13 +135,23 @@ export async function loadXCredentials(
   const name = await resolveAccount('x', account, dataDir);
   const cred = await loadCredential('x', name, dataDir);
 
+  // OAuth-derived credentials, computed up front so they can be merged into
+  // whichever tier resolves below. Ops that strictly require OAuth (analytics,
+  // dm-list/dm-conversation, dm send, media upload) must still see accessToken
+  // even when a cookie is also configured — otherwise a cookie tier match
+  // silently starves OAuth-only operations of a token that is actually present.
+  const oauth = {
+    accessToken: cred?.accessToken ?? process.env['X_ACCESS_TOKEN'],
+    bearerToken: cred?.bearerToken,
+  };
+
   // Tier 1: the caller's own cookie session.
   const ownCookie = {
     authToken: cred?.authToken ?? process.env['X_AUTH_TOKEN'],
     ct0:       cred?.ct0       ?? process.env['X_CT0'],
   };
   if (ownCookie.authToken && ownCookie.ct0) {
-    return ownCookie;
+    return { ...ownCookie, ...oauth };
   }
 
   // Tier 2: the shared public account, for allowlisted anonymous public
@@ -149,15 +159,11 @@ export async function loadXCredentials(
   if (isPublicAllowed('x', op)) {
     const pub = await fetchPublicCredential('x');
     if (pub?.authToken && pub?.ct0) {
-      return { authToken: pub.authToken, ct0: pub.ct0 };
+      return { authToken: pub.authToken, ct0: pub.ct0, ...oauth };
     }
   }
 
   // Tier 3: OAuth-derived credentials.
-  const oauth = {
-    accessToken: cred?.accessToken ?? process.env['X_ACCESS_TOKEN'],
-    bearerToken: cred?.bearerToken,
-  };
   if (oauth.accessToken || oauth.bearerToken) {
     return oauth;
   }
