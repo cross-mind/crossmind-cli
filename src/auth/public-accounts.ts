@@ -36,7 +36,7 @@ const PUBLIC_OPS: Record<string, ReadonlySet<string>> = {
   // Product Hunt has no personal identity concept at all in this CLI (a
   // Developer Token is app-level, not user-level), so every read op is
   // account-agnostic and eligible for the shared public account.
-  ph: new Set(['top', 'search']),
+  ph: new Set(['top', 'search', 'show']),
 };
 
 export function isPublicAllowed(provider: string, op: string | undefined): boolean {
