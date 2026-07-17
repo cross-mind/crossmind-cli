@@ -172,7 +172,10 @@ def _init_client_transaction() -> None:
         from x_client_transaction.utils import generate_headers as _ct_gen_headers, get_ondemand_file_url
         s = _get_session()
         ct_hdrs = _ct_gen_headers()
-        home = s.get("https://x.com", headers=ct_hdrs, timeout=15)
+        # X's bare "/" no longer embeds the ondemand bundle reference the
+        # x_client_transaction lib scrapes for; "/home" still does (matches
+        # upstream fix in iSarabjitDhiman/XClientTransaction@647bff2b).
+        home = s.get("https://x.com/home", headers=ct_hdrs, timeout=15)
         soup = bs4.BeautifulSoup(home.content, "html.parser")
         od_url = get_ondemand_file_url(response=soup)
         od = s.get(od_url, headers=ct_hdrs, timeout=15)
@@ -184,8 +187,12 @@ def _init_client_transaction() -> None:
         os.makedirs(os.path.dirname(_ct_cache_path), exist_ok=True)
         with open(_ct_cache_path, "w", encoding="utf-8") as f:
             json.dump({"html": home.text, "ondemand": od.text, "ts": time.time()}, f)
-    except Exception:
-        pass  # Silently degrade — requests work without CT-id on some endpoints
+    except Exception as e:
+        # Degrade — requests still work without CT-id on most endpoints, but
+        # X enforces it on SearchTimeline/Followers/HomeTimeline, so warn
+        # loudly instead of silently 404ing on every call.
+        print(f"[x-fetch] warning: x-client-transaction-id init failed ({e}); "
+              f"search/followers/home may 404", file=sys.stderr)
 
 
 def _transaction_id(method: str, path: str) -> Optional[str]:
