@@ -9,6 +9,7 @@
  */
 
 import { request, AuthError, type RequestOptions } from './client.js';
+import { markCredentialInvalid } from '../auth/store.js';
 
 const X_API_BASE = 'https://api.twitter.com';
 
@@ -54,6 +55,8 @@ export interface XCredentials {
   ct0?: string;         // ct0 CSRF token   (required with authToken)
   bearerToken?: string; // Developer app-only bearer token (v2 REST, read-only)
   accessToken?: string; // OAuth 2.0 user access token (v2 REST, user context)
+  _account?: string;    // account name in the credential store, for invalid-marker bookkeeping
+  _dataDir?: string;
 }
 
 /** Build headers for v2 REST API calls (api.twitter.com). */
@@ -122,6 +125,12 @@ export async function xRequest<T = unknown>(
     // 403 from Twitter often means a policy/permission denial (e.g. Free tier reply restriction),
     // not a missing token — surface the actual API message instead of a misleading auth hint.
     if (err instanceof AuthError && /HTTP 401/.test(err.message)) {
+      if (creds?.accessToken && creds._account) {
+        await markCredentialInvalid(
+          'x', creds._account, 'oauth', err.message,
+          { accessToken: creds.accessToken }, creds._dataDir,
+        );
+      }
       throw new AuthError(
         'X OAuth token missing or expired.\n' +
         '  Set X_ACCESS_TOKEN, or run: crossmind auth login x --access-token <token>'
@@ -151,7 +160,19 @@ export async function xGqlGet<T = unknown>(
   });
   const url = `${X_GQL_BASE}/${queryId}/${operation}?${params}`;
   const headers = buildGqlHeaders(creds);
-  return request<T>(url, { headers });
+  try {
+    return await request<T>(url, { headers });
+  } catch (err) {
+    // Cookie session rejected by X — mark this tier dead so it isn't silently
+    // retried on every subsequent call, but keep the account record around.
+    if (err instanceof AuthError && /HTTP 401/.test(err.message) && creds.authToken && creds._account) {
+      await markCredentialInvalid(
+        'x', creds._account, 'cookie', err.message,
+        { authToken: creds.authToken, ct0: creds.ct0 }, creds._dataDir,
+      );
+    }
+    throw err;
+  }
 }
 
 /**

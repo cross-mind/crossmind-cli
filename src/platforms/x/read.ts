@@ -469,7 +469,7 @@ export async function getLikes(
   );
   const userId = userResp.data.id;
   const params = new URLSearchParams({
-    max_results: String(Math.min(limit, 100)),
+    max_results: String(Math.min(Math.max(limit, 5), 100)), // X requires 5-100
     'tweet.fields': 'created_at,public_metrics,author_id',
     'user.fields': 'id,username,name,profile_image_url',
     expansions: 'author_id',

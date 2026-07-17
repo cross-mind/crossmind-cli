@@ -10,7 +10,7 @@ import {
   generateCodeVerifier, generateCodeChallenge, generateState,
   buildAuthUrl, exchangeCode, captureCallback, type OAuthConfig,
 } from './oauth.js';
-import { saveCredential, loadCredential, resolveAccount } from './store.js';
+import { saveCredential, loadCredential, resolveAccount, fingerprintValue, clearInvalidMarker } from './store.js';
 import { fetchPublicCredential, isPublicAllowed } from './public-accounts.js';
 
 // X OAuth 2.0 app credentials (public client - PKCE only, no secret)
@@ -126,32 +126,51 @@ export async function saveBearerToken(
  *      instead of spending it on account-agnostic queries.
  *   3. OAuth — accessToken (file or X_ACCESS_TOKEN env var) or bearerToken.
  *      Lowest priority; used only when neither cookie tier is available.
+ *
+ * Tiers 1 and 3 are skipped once markCredentialInvalid() has confirmed-dead
+ * that exact value (fingerprint match) via a live 401 from X — this stops a
+ * dead cookie/token from being retried forever. If the underlying value has
+ * since changed (e.g. env var refreshed by the platform), the fingerprint no
+ * longer matches, the tier is used again, and the stale marker is cleared.
  */
 export async function loadXCredentials(
   account?: string,
   dataDir?: string,
   op?: string
-): Promise<{ authToken?: string; ct0?: string; accessToken?: string; bearerToken?: string } | null> {
+): Promise<{ authToken?: string; ct0?: string; accessToken?: string; bearerToken?: string; _account: string; _dataDir?: string } | null> {
   const name = await resolveAccount('x', account, dataDir);
   const cred = await loadCredential('x', name, dataDir);
+  const ctx = { _account: name, _dataDir: dataDir };
 
   // OAuth-derived credentials, computed up front so they can be merged into
   // whichever tier resolves below. Ops that strictly require OAuth (analytics,
   // dm-list/dm-conversation, dm send, media upload) must still see accessToken
   // even when a cookie is also configured — otherwise a cookie tier match
   // silently starves OAuth-only operations of a token that is actually present.
-  const oauth = {
-    accessToken: cred?.accessToken ?? process.env['X_ACCESS_TOKEN'],
-    bearerToken: cred?.bearerToken,
-  };
+  let oauthAccessToken = cred?.accessToken ?? process.env['X_ACCESS_TOKEN'];
+  if (cred?.invalidOAuth) {
+    if (fingerprintValue(oauthAccessToken) === cred.invalidOAuth.valueHash) {
+      oauthAccessToken = undefined; // still the same dead token — don't retry it
+    } else {
+      await clearInvalidMarker('x', name, 'oauth', dataDir); // refreshed since marking — self-heal
+    }
+  }
+  const oauth = { accessToken: oauthAccessToken, bearerToken: cred?.bearerToken };
 
   // Tier 1: the caller's own cookie session.
-  const ownCookie = {
-    authToken: cred?.authToken ?? process.env['X_AUTH_TOKEN'],
-    ct0:       cred?.ct0       ?? process.env['X_CT0'],
-  };
+  let ownAuthToken = cred?.authToken ?? process.env['X_AUTH_TOKEN'];
+  let ownCt0 = cred?.ct0 ?? process.env['X_CT0'];
+  if (cred?.invalidCookie) {
+    if (fingerprintValue(`${ownAuthToken ?? ''}|${ownCt0 ?? ''}`) === cred.invalidCookie.valueHash) {
+      ownAuthToken = undefined;
+      ownCt0 = undefined;
+    } else {
+      await clearInvalidMarker('x', name, 'cookie', dataDir); // refreshed since marking — self-heal
+    }
+  }
+  const ownCookie = { authToken: ownAuthToken, ct0: ownCt0 };
   if (ownCookie.authToken && ownCookie.ct0) {
-    return { ...ownCookie, ...oauth };
+    return { ...ownCookie, ...oauth, ...ctx };
   }
 
   // Tier 2: the shared public account, for allowlisted anonymous public
@@ -159,13 +178,13 @@ export async function loadXCredentials(
   if (isPublicAllowed('x', op)) {
     const pub = await fetchPublicCredential('x');
     if (pub?.authToken && pub?.ct0) {
-      return { authToken: pub.authToken, ct0: pub.ct0, ...oauth };
+      return { authToken: pub.authToken, ct0: pub.ct0, ...oauth, ...ctx };
     }
   }
 
   // Tier 3: OAuth-derived credentials.
   if (oauth.accessToken || oauth.bearerToken) {
-    return oauth;
+    return { ...oauth, ...ctx };
   }
 
   return null;

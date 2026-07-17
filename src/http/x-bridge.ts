@@ -22,14 +22,36 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { XTweet, XUser } from '../platforms/x/read.js';
 import { makeUser, type UnifiedUser } from '../types/identity.js';
+import { markCredentialInvalid } from '../auth/store.js';
 
 const execFileAsync = promisify(execFile);
+
+/** Cookie creds for the bridge, plus optional account context for invalid-marker bookkeeping. */
+export interface BridgeCreds {
+  authToken: string;
+  ct0: string;
+  _account?: string;
+  _dataDir?: string;
+}
 
 // scripts/x-fetch.py is two levels up from dist/http/
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = path.resolve(__dir, '../../scripts/x-fetch.py');
 
 const PYTHON_CANDIDATES = ['python3', 'python'];
+
+/** Matches x-fetch.py's auth-failure messages: raw HTTP 401s and X's own "Could not authenticate you" (code 32). */
+const AUTH_FAILURE_RE = /HTTP Error 401|Could not authenticate you/i;
+
+async function markCookieInvalid(creds: BridgeCreds, reason: string): Promise<void> {
+  if (!creds._account) return; // no account context to attach the marker to
+  try {
+    await markCredentialInvalid(
+      'x', creds._account, 'cookie', reason,
+      { authToken: creds.authToken, ct0: creds.ct0 }, creds._dataDir,
+    );
+  } catch { /* best-effort — never let marker bookkeeping mask the real error */ }
+}
 
 let _resolvedPython: string | null | undefined = undefined;
 
@@ -60,7 +82,7 @@ export async function isCookieClientAvailable(): Promise<boolean> {
 
 /** Run x-fetch.py with cookie credentials injected via env. */
 async function runFetch<T>(
-  creds: { authToken: string; ct0: string },
+  creds: BridgeCreds,
   args: string[]
 ): Promise<T> {
   const python = await resolvePython();
@@ -95,11 +117,17 @@ async function runFetch<T>(
       try {
         const parsed = JSON.parse(raw) as CliResponse<T>;
         if (!parsed.ok && parsed.error?.message) {
+          if (AUTH_FAILURE_RE.test(parsed.error.message)) {
+            await markCookieInvalid(creds, parsed.error.message);
+          }
           throw new Error(parsed.error.message);
         }
       } catch (jsonErr) {
         if (jsonErr instanceof SyntaxError) { /* ignore, fall through */ } else { throw jsonErr; }
       }
+    }
+    if (AUTH_FAILURE_RE.test(execErr.message ?? '')) {
+      await markCookieInvalid(creds, execErr.message ?? 'HTTP Error 401');
     }
     throw err;
   }
@@ -189,7 +217,7 @@ function mapCliUser(u: CliUser, rank: number): XUser {
 // ── Public API ─────────────────────────────────────────────────────────────
 
 export async function bridgeSearchTweets(
-  query: string, limit: number, creds: { authToken: string; ct0: string }
+  query: string, limit: number, creds: BridgeCreds
 ): Promise<XTweet[]> {
   const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['search', query, '--count', String(limit)]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Search failed');
@@ -197,7 +225,7 @@ export async function bridgeSearchTweets(
 }
 
 export async function bridgeFeed(
-  limit: number, creds: { authToken: string; ct0: string }
+  limit: number, creds: BridgeCreds
 ): Promise<XTweet[]> {
   const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['feed', '--count', String(limit)]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Feed failed');
@@ -205,7 +233,7 @@ export async function bridgeFeed(
 }
 
 export async function bridgeUserTimeline(
-  username: string, limit: number, creds: { authToken: string; ct0: string }
+  username: string, limit: number, creds: BridgeCreds
 ): Promise<XTweet[]> {
   const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['user-posts', username, '--count', String(limit)]);
   if (!result.ok) throw new Error(result.error?.message ?? 'User timeline failed');
@@ -213,7 +241,7 @@ export async function bridgeUserTimeline(
 }
 
 export async function bridgeUserProfile(
-  username: string, creds: { authToken: string; ct0: string }
+  username: string, creds: BridgeCreds
 ): Promise<XUser | null> {
   const result = await runFetch<CliResponse<CliUser>>(creds, ['user', username]);
   if (!result.ok) return null;
@@ -224,7 +252,7 @@ export async function bridgeUserProfile(
 
 /** Resolve a numeric rest_id → full profile (cookie-auth path). */
 export async function bridgeUserById(
-  restId: string, creds: { authToken: string; ct0: string }
+  restId: string, creds: BridgeCreds
 ): Promise<XUser | null> {
   const result = await runFetch<CliResponse<CliUser>>(creds, ['user-by-id', restId]);
   if (!result.ok) return null;
@@ -234,7 +262,7 @@ export async function bridgeUserById(
 }
 
 export async function bridgeTweet(
-  tweetId: string, limit: number, creds: { authToken: string; ct0: string }
+  tweetId: string, limit: number, creds: BridgeCreds
 ): Promise<{ tweet: XTweet; thread: XTweet[] }> {
   const result = await runFetch<CliResponse<CliTweet>>(creds, ['tweet', tweetId, '--count', String(limit)]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Tweet fetch failed');
@@ -246,7 +274,7 @@ export async function bridgeTweet(
 }
 
 export async function bridgeFollowers(
-  username: string, limit: number, creds: { authToken: string; ct0: string }
+  username: string, limit: number, creds: BridgeCreds
 ): Promise<XUser[]> {
   const result = await runFetch<CliResponse<CliUser[]>>(creds, ['followers', username, '--count', String(limit)]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Followers failed');
@@ -254,7 +282,7 @@ export async function bridgeFollowers(
 }
 
 export async function bridgeFollowing(
-  username: string, limit: number, creds: { authToken: string; ct0: string }
+  username: string, limit: number, creds: BridgeCreds
 ): Promise<XUser[]> {
   const result = await runFetch<CliResponse<CliUser[]>>(creds, ['following', username, '--count', String(limit)]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Following failed');
@@ -262,7 +290,7 @@ export async function bridgeFollowing(
 }
 
 export async function bridgeBookmarks(
-  limit: number, creds: { authToken: string; ct0: string }
+  limit: number, creds: BridgeCreds
 ): Promise<XTweet[]> {
   const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['bookmarks', '--count', String(limit)]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Bookmarks failed');
@@ -270,7 +298,7 @@ export async function bridgeBookmarks(
 }
 
 export async function bridgeNotifications(
-  limit: number, creds: { authToken: string; ct0: string }
+  limit: number, creds: BridgeCreds
 ): Promise<XTweet[]> {
   const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['notifications', '--count', String(limit)]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Notifications failed');
@@ -278,7 +306,7 @@ export async function bridgeNotifications(
 }
 
 export async function bridgeListTweets(
-  listId: string, limit: number, creds: { authToken: string; ct0: string }
+  listId: string, limit: number, creds: BridgeCreds
 ): Promise<XTweet[]> {
   const result = await runFetch<CliResponse<CliTweet[]>>(creds, ['list', listId, '--count', String(limit)]);
   if (!result.ok) throw new Error(result.error?.message ?? 'List tweets failed');
@@ -295,7 +323,7 @@ export interface BridgeReplyResult {
 }
 
 export async function bridgeReply(
-  tweetId: string, text: string, creds: { authToken: string; ct0: string }
+  tweetId: string, text: string, creds: BridgeCreds
 ): Promise<BridgeReplyResult> {
   const result = await runFetch<CliResponse<BridgeReplyResult>>(creds, ['reply', tweetId, text]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Reply failed');
@@ -303,28 +331,28 @@ export async function bridgeReply(
 }
 
 export async function bridgeDelete(
-  tweetId: string, creds: { authToken: string; ct0: string }
+  tweetId: string, creds: BridgeCreds
 ): Promise<void> {
   const result = await runFetch<CliResponse<unknown>>(creds, ['delete', tweetId]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Delete failed');
 }
 
 export async function bridgeBookmark(
-  tweetId: string, creds: { authToken: string; ct0: string }
+  tweetId: string, creds: BridgeCreds
 ): Promise<void> {
   const result = await runFetch<CliResponse<unknown>>(creds, ['bookmark', tweetId]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Bookmark failed');
 }
 
 export async function bridgeUnbookmark(
-  tweetId: string, creds: { authToken: string; ct0: string }
+  tweetId: string, creds: BridgeCreds
 ): Promise<void> {
   const result = await runFetch<CliResponse<unknown>>(creds, ['unbookmark', tweetId]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Unbookmark failed');
 }
 
 export async function bridgePost(
-  text: string, creds: { authToken: string; ct0: string }
+  text: string, creds: BridgeCreds
 ): Promise<{ id: string; result?: { tweet_id: string; url: string } }> {
   const result = await runFetch<CliResponse<{ id: string; result?: { tweet_id: string; url: string } }>>(creds, ['post', text]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Post failed');
@@ -333,7 +361,7 @@ export async function bridgePost(
 
 export async function bridgeArticle(
   text: string,
-  creds: { authToken: string; ct0: string },
+  creds: BridgeCreds,
   title?: string,
 ): Promise<{ id: string; url?: string }> {
   const args = ['article', text, ...(title ? ['--title', title] : [])];
@@ -343,7 +371,7 @@ export async function bridgeArticle(
 }
 
 export async function bridgeQuote(
-  tweetId: string, text: string, creds: { authToken: string; ct0: string }
+  tweetId: string, text: string, creds: BridgeCreds
 ): Promise<{ id: string; result?: { tweet_id: string; url: string } }> {
   const result = await runFetch<CliResponse<{ id: string; result?: { tweet_id: string; url: string } }>>(creds, ['quote', tweetId, text]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Quote failed');
@@ -356,7 +384,7 @@ export interface BridgeLikeResult {
 }
 
 export async function bridgeLike(
-  tweetId: string, creds: { authToken: string; ct0: string }
+  tweetId: string, creds: BridgeCreds
 ): Promise<BridgeLikeResult> {
   const result = await runFetch<CliResponse<BridgeLikeResult>>(creds, ['like', tweetId]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Like failed');
@@ -364,7 +392,7 @@ export async function bridgeLike(
 }
 
 export async function bridgeUnlike(
-  tweetId: string, creds: { authToken: string; ct0: string }
+  tweetId: string, creds: BridgeCreds
 ): Promise<void> {
   const result = await runFetch<CliResponse<unknown>>(creds, ['unlike', tweetId]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Unlike failed');
@@ -377,7 +405,7 @@ export interface BridgeRetweetResult {
 }
 
 export async function bridgeRetweet(
-  tweetId: string, creds: { authToken: string; ct0: string }
+  tweetId: string, creds: BridgeCreds
 ): Promise<BridgeRetweetResult> {
   const result = await runFetch<CliResponse<BridgeRetweetResult>>(creds, ['retweet', tweetId]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Retweet failed');
@@ -385,7 +413,7 @@ export async function bridgeRetweet(
 }
 
 export async function bridgeUnretweet(
-  tweetId: string, creds: { authToken: string; ct0: string }
+  tweetId: string, creds: BridgeCreds
 ): Promise<void> {
   const result = await runFetch<CliResponse<unknown>>(creds, ['unretweet', tweetId]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Unretweet failed');
@@ -404,7 +432,7 @@ interface BridgeFollowUser {
 }
 
 export async function bridgeFollow(
-  username: string, creds: { authToken: string; ct0: string }
+  username: string, creds: BridgeCreds
 ): Promise<{ following: boolean; user: UnifiedUser }> {
   const result = await runFetch<CliResponse<{ following: boolean; user: BridgeFollowUser }>>(creds, ['follow', username]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Follow failed');
@@ -412,7 +440,7 @@ export async function bridgeFollow(
 }
 
 export async function bridgeUnfollow(
-  username: string, creds: { authToken: string; ct0: string }
+  username: string, creds: BridgeCreds
 ): Promise<{ following: boolean; user: UnifiedUser }> {
   const result = await runFetch<CliResponse<{ following: boolean; user: BridgeFollowUser }>>(creds, ['unfollow', username]);
   if (!result.ok) throw new Error(result.error?.message ?? 'Unfollow failed');

@@ -8,7 +8,7 @@ import { loginX, saveCookieAuth, saveBearerToken, saveAccessToken, loadXCredenti
 import { loginReddit, saveRedditCookies, loadRedditCredentials } from '../auth/reddit.js';
 import { loginBluesky } from '../auth/bluesky.js';
 import { saveGitHubToken } from '../auth/github.js';
-import { saveCredential, listAccounts, removeCredential, getDefaultAccount, loadCredential, resolveAccount } from '../auth/store.js';
+import { saveCredential, listAccounts, removeCredential, getDefaultAccount, loadCredential, resolveAccount, fingerprintValue } from '../auth/store.js';
 import { isCookieClientAvailable } from '../http/x-bridge.js';
 import { isRedditClientAvailable } from '../http/reddit-bridge.js';
 import * as readline from 'node:readline/promises';
@@ -249,21 +249,45 @@ Examples:
 
       const xCookieStored = !!(xCred?.authToken && xCred?.ct0);
       const xCookieEnv    = !!(process.env['X_AUTH_TOKEN'] && process.env['X_CT0']);
-      const hasCookie     = xCookieStored || xCookieEnv;
       const cookieSrc     = xCookieStored ? 'stored' : xCookieEnv ? 'env var' : '';
+
+      // A tier is treated as invalid only while the currently-active value (stored
+      // or env) still matches the fingerprint that was marked dead — a fresh value
+      // (different fingerprint) is treated as untested, not invalid, same as loadXCredentials().
+      const currentAuthToken = xCred?.authToken ?? process.env['X_AUTH_TOKEN'];
+      const currentCt0       = xCred?.ct0 ?? process.env['X_CT0'];
+      const cookieInvalid = xCred?.invalidCookie &&
+        fingerprintValue(`${currentAuthToken ?? ''}|${currentCt0 ?? ''}`) === xCred.invalidCookie.valueHash
+        ? xCred.invalidCookie : undefined;
+      const hasCookie = (xCookieStored || xCookieEnv) && !cookieInvalid;
 
       const xOAuthStored = !!xCred?.accessToken;
       const xOAuthEnv    = !!process.env['X_ACCESS_TOKEN'];
-      const hasOAuth     = xOAuthStored || xOAuthEnv;
       const oauthSrc     = xOAuthStored ? 'stored' : xOAuthEnv ? 'env var' : '';
+
+      const currentAccessToken = xCred?.accessToken ?? process.env['X_ACCESS_TOKEN'];
+      const oauthInvalid = xCred?.invalidOAuth &&
+        fingerprintValue(currentAccessToken) === xCred.invalidOAuth.valueHash
+        ? xCred.invalidOAuth : undefined;
+      const hasOAuth = (xOAuthStored || xOAuthEnv) && !oauthInvalid;
 
       const xBridgeOk = hasCookie && await isCookieClientAvailable();
 
       console.log(`\nX (Twitter)  ·  account: ${xAccountName}`);
-      console.log(credLine('Cookie (auth_token + ct0)', hasCookie,
-        hasCookie ? `${cookieSrc}` : 'not configured'));
-      console.log(credLine('OAuth (access_token)', hasOAuth,
-        hasOAuth ? `${oauthSrc}` : 'not configured'));
+      if (cookieInvalid) {
+        console.log(credLine('Cookie (auth_token + ct0)', false,
+          `INVALID — ${cookieInvalid.reason} (since ${cookieInvalid.at}) — needs re-login`));
+      } else {
+        console.log(credLine('Cookie (auth_token + ct0)', hasCookie,
+          hasCookie ? `${cookieSrc}` : 'not configured'));
+      }
+      if (oauthInvalid) {
+        console.log(credLine('OAuth (access_token)', false,
+          `INVALID — ${oauthInvalid.reason} (since ${oauthInvalid.at}) — needs re-login`));
+      } else {
+        console.log(credLine('OAuth (access_token)', hasOAuth,
+          hasOAuth ? `${oauthSrc}` : 'not configured'));
+      }
       if (hasCookie) {
         console.log(credLine('Bridge (Python + curl_cffi)', xBridgeOk,
           xBridgeOk ? 'available' : 'not found — install: uv pip install curl_cffi'));
@@ -316,6 +340,14 @@ Examples:
         }
         if (!hasOAuth && hasCookie) {
           recs.push('No OAuth — follow/unfollow, dm, dm-list, analytics require OAuth access token');
+        }
+        if (cookieInvalid) {
+          recs.push('Cookie session was rejected by X — re-extract a fresh session:');
+          recs.push('  crossmind extract-cookie x');
+        }
+        if (oauthInvalid) {
+          recs.push('OAuth token was rejected by X — re-authenticate:');
+          recs.push('  crossmind auth login x --access-token <token>');
         }
         if (recs.length > 0) {
           console.log('');

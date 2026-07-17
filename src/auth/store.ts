@@ -16,6 +16,13 @@ import os from 'node:os';
 import { encryptProfile, decryptProfile } from './profile-crypto.js';
 import { getProfileKey, warnPlaintextOnce } from './profile-key.js';
 
+/** Marks one credential tier (cookie or oauth) as known-dead so it isn't silently reused. */
+export interface InvalidMarker {
+  reason: string;   // short human-readable cause, e.g. "HTTP 401: Could not authenticate you"
+  at: string;       // ISO timestamp when detected
+  valueHash?: string; // fingerprint of the value that failed, so a later refreshed value auto-clears the marker
+}
+
 export interface Credential {
   platform: string;
   name: string;
@@ -34,6 +41,16 @@ export interface Credential {
   redditModhash?: string;  // modhash for Reddit write ops
   redditCsrftoken?: string; // csrf_token cookie for Reddit
   redditLoid?: string;     // loid cookie for Reddit
+  invalidCookie?: InvalidMarker; // set when authToken/ct0 was confirmed dead by the API
+  invalidOAuth?: InvalidMarker;  // set when accessToken was confirmed dead by the API
+}
+
+/** Cheap non-reversible fingerprint of a secret value, for marker/refresh comparison only. */
+export function fingerprintValue(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  return `${value.length}:${(hash >>> 0).toString(16)}`;
 }
 
 interface Config {
@@ -68,35 +85,88 @@ async function readConfig(dataDir: string): Promise<Config> {
   }
 }
 
-/**
- * Save (create or update) a credential, encrypted at rest.
- * Merges with any existing stored record for the same platform+name so that
- * saving one credential type (e.g. a bearer token) never wipes previously
- * stored fields of another type (e.g. cookie authToken/ct0) on the same account.
- */
-export async function saveCredential(cred: Credential, dataDir?: string): Promise<void> {
-  const dir = getDataDir(dataDir);
+/** Write the exact given record as the account's stored credential (encrypted, or plaintext fallback). */
+async function persistCredential(cred: Credential, dir: string): Promise<void> {
   const encFile = encPath(cred.platform, cred.name, dir);
   await fs.mkdir(path.dirname(encFile), { recursive: true });
-
-  const existing = await loadCredential(cred.platform, cred.name, dataDir);
-  const merged: Credential = { ...existing, ...cred };
 
   const { key, salt } = await getProfileKey(dir);
   if (!key) {
     warnPlaintextOnce();
     // Plaintext fallback: write .json, remove any stale .enc
-    await fs.writeFile(credPath(cred.platform, cred.name, dir), JSON.stringify(merged, null, 2));
+    await fs.writeFile(credPath(cred.platform, cred.name, dir), JSON.stringify(cred, null, 2));
     await fs.rm(encFile, { force: true });
     return;
   }
 
   const profileId = profileIdOf(cred.platform, cred.name);
-  const envelope = encryptProfile(JSON.stringify(merged), key, salt, profileId);
+  const envelope = encryptProfile(JSON.stringify(cred), key, salt, profileId);
   await fs.writeFile(encFile, envelope, { mode: 0o600 });
   try { await fs.chmod(encFile, 0o600); } catch { /* non-POSIX */ }
   // Drop any legacy plaintext file for this account
   await fs.rm(credPath(cred.platform, cred.name, dir), { force: true });
+}
+
+/**
+ * Save (create or update) a credential, encrypted at rest.
+ * Merges with any existing stored record for the same platform+name so that
+ * saving one credential type (e.g. a bearer token) never wipes previously
+ * stored fields of another type (e.g. cookie authToken/ct0) on the same account.
+ * Saving a fresh value for a tier also clears any stale invalid-marker for that tier.
+ */
+export async function saveCredential(cred: Credential, dataDir?: string): Promise<void> {
+  const dir = getDataDir(dataDir);
+  const existing = await loadCredential(cred.platform, cred.name, dataDir);
+  const merged: Credential = { ...existing, ...cred };
+  if (cred.authToken || cred.ct0) delete merged.invalidCookie;
+  if (cred.accessToken) delete merged.invalidOAuth;
+  await persistCredential(merged, dir);
+}
+
+/**
+ * Mark one credential tier as confirmed-dead: clears its secret fields (so it can
+ * never be silently reused) and records a reason + fingerprint of the failed value.
+ * Works even for accounts with no prior stored record (e.g. purely env-var-driven),
+ * so the account name itself carries a durable "needs re-auth" signal.
+ */
+export async function markCredentialInvalid(
+  platform: string,
+  name: string,
+  tier: 'cookie' | 'oauth',
+  reason: string,
+  failedValue: { authToken?: string; ct0?: string; accessToken?: string },
+  dataDir?: string,
+): Promise<void> {
+  const dir = getDataDir(dataDir);
+  const existing = (await loadCredential(platform, name, dataDir)) ?? { platform, name };
+  const next: Credential = { ...existing };
+  const marker: InvalidMarker = { reason, at: new Date().toISOString() };
+  if (tier === 'cookie') {
+    marker.valueHash = fingerprintValue(`${failedValue.authToken ?? ''}|${failedValue.ct0 ?? ''}`);
+    delete next.authToken;
+    delete next.ct0;
+    next.invalidCookie = marker;
+  } else {
+    marker.valueHash = fingerprintValue(failedValue.accessToken);
+    delete next.accessToken;
+    next.invalidOAuth = marker;
+  }
+  await persistCredential(next, dir);
+}
+
+/** Clear a previously-set invalid marker (e.g. once a fresh value for that tier is confirmed). */
+export async function clearInvalidMarker(
+  platform: string,
+  name: string,
+  tier: 'cookie' | 'oauth',
+  dataDir?: string,
+): Promise<void> {
+  const dir = getDataDir(dataDir);
+  const existing = await loadCredential(platform, name, dataDir);
+  if (!existing) return;
+  const next = { ...existing };
+  if (tier === 'cookie') delete next.invalidCookie; else delete next.invalidOAuth;
+  await persistCredential(next, dir);
 }
 
 /** Load a credential by platform + name. Returns null if not found. */
