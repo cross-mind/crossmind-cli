@@ -333,6 +333,11 @@ export async function getHomeTimeline(
       if (!c?.accessToken) {
         throw new Error('Home timeline requires X authentication. Run: crossmind auth login x');
       }
+      // v2 has no bare "/2/timelines/home" — the reverse-chronological home
+      // timeline is scoped to the authenticated user's id.
+      const meData = await xRequest<{ data: { id: string } }>('/2/users/me', { creds: c });
+      const userId = meData.data.id;
+
       const params = new URLSearchParams({
         max_results: String(Math.min(limit, 100)),
         'tweet.fields': 'created_at,public_metrics,author_id',
@@ -343,7 +348,7 @@ export async function getHomeTimeline(
       const data = await xRequest<{
         data?: Record<string, unknown>[];
         includes?: { users?: Record<string, unknown>[] };
-      }>(`/2/timelines/home?${params}`, {
+      }>(`/2/users/${userId}/timelines/reverse_chronological?${params}`, {
         creds: c,
       });
 
