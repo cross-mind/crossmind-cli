@@ -133,11 +133,29 @@ export async function saveBearerToken(
  * since changed (e.g. env var refreshed by the platform), the fingerprint no
  * longer matches, the tier is used again, and the stale marker is cleared.
  */
-export async function loadXCredentials(
+export interface ResolvedXCredential {
+  authToken?: string;
+  ct0?: string;
+  accessToken?: string;
+  bearerToken?: string;
+  _account: string;
+  _dataDir?: string;
+  _credSource: 'own' | 'public' | 'oauth';
+}
+
+/**
+ * Resolve X credentials as an ORDERED list of every usable tier (own cookie →
+ * public cookie → OAuth), instead of stopping at the first one found. This is
+ * what lets a caller cascade to the next tier when the first one fails at
+ * actual use-time ("逐级降权" progressive degradation), rather than only
+ * getting a single static pick. `loadXCredentials()` below stays the
+ * single-result shorthand most callers want (candidates[0]).
+ */
+export async function loadXCredentialCandidates(
   account?: string,
   dataDir?: string,
   op?: string
-): Promise<{ authToken?: string; ct0?: string; accessToken?: string; bearerToken?: string; _account: string; _dataDir?: string } | null> {
+): Promise<ResolvedXCredential[]> {
   const name = await resolveAccount('x', account, dataDir);
   const cred = await loadCredential('x', name, dataDir);
   const ctx = { _account: name, _dataDir: dataDir };
@@ -157,6 +175,8 @@ export async function loadXCredentials(
   }
   const oauth = { accessToken: oauthAccessToken, bearerToken: cred?.bearerToken };
 
+  const candidates: ResolvedXCredential[] = [];
+
   // Tier 1: the caller's own cookie session.
   let ownAuthToken = cred?.authToken ?? process.env['X_AUTH_TOKEN'];
   let ownCt0 = cred?.ct0 ?? process.env['X_CT0'];
@@ -170,7 +190,7 @@ export async function loadXCredentials(
   }
   const ownCookie = { authToken: ownAuthToken, ct0: ownCt0 };
   if (ownCookie.authToken && ownCookie.ct0) {
-    return { ...ownCookie, ...oauth, ...ctx };
+    candidates.push({ ...ownCookie, ...oauth, ...ctx, _credSource: 'own' });
   }
 
   // Tier 2: the shared public account, for allowlisted anonymous public
@@ -178,14 +198,23 @@ export async function loadXCredentials(
   if (isPublicAllowed('x', op)) {
     const pub = await fetchPublicCredential('x');
     if (pub?.authToken && pub?.ct0) {
-      return { authToken: pub.authToken, ct0: pub.ct0, ...oauth, ...ctx };
+      candidates.push({ authToken: pub.authToken, ct0: pub.ct0, ...oauth, ...ctx, _credSource: 'public' });
     }
   }
 
   // Tier 3: OAuth-derived credentials.
   if (oauth.accessToken || oauth.bearerToken) {
-    return { ...oauth, ...ctx };
+    candidates.push({ ...oauth, ...ctx, _credSource: 'oauth' });
   }
 
-  return null;
+  return candidates;
+}
+
+export async function loadXCredentials(
+  account?: string,
+  dataDir?: string,
+  op?: string
+): Promise<ResolvedXCredential | null> {
+  const candidates = await loadXCredentialCandidates(account, dataDir, op);
+  return candidates[0] ?? null;
 }

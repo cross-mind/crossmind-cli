@@ -32,6 +32,8 @@ export interface BridgeCreds {
   ct0: string;
   _account?: string;
   _dataDir?: string;
+  /** Which credential tier this cookie was resolved from — see auth/x.ts loadXCredentials(). */
+  _credSource?: 'own' | 'public' | 'oauth';
 }
 
 // scripts/x-fetch.py is two levels up from dist/http/
@@ -43,7 +45,35 @@ const PYTHON_CANDIDATES = ['python3', 'python'];
 /** Matches x-fetch.py's auth-failure messages: raw HTTP 401s and X's own "Could not authenticate you" (code 32). */
 const AUTH_FAILURE_RE = /HTTP Error 401|Could not authenticate you/i;
 
+/**
+ * Pseudo-account name used to record local observations about the shared
+ * public account's health. It is never resolved as a real credential (see
+ * loadXCredentials/fetchPublicCredential) — this is purely a local history
+ * log so `crossmind auth status` can show "the shared account was last seen
+ * dead at T" without misattributing a shared-infra outage to the caller's
+ * own login. Matches the `name: '__public__'` convention already used by
+ * fetchPublicCredential's transient Credential object.
+ */
+export const PUBLIC_TIER_ACCOUNT = '__public__';
+
+/**
+ * Persist a local "this cookie is dead" marker. The user's own credential is
+ * marked directly against their account. The shared public account is
+ * backend-managed infrastructure the CLI can't fix, so its failures are
+ * recorded separately under PUBLIC_TIER_ACCOUNT — a local *observation* log,
+ * not a claim about a locally-fixable credential — so degradation history
+ * stays queryable without conflating it with the caller's own account state.
+ */
 async function markCookieInvalid(creds: BridgeCreds, reason: string): Promise<void> {
+  if (creds._credSource === 'public') {
+    try {
+      await markCredentialInvalid(
+        'x', PUBLIC_TIER_ACCOUNT, 'cookie', reason,
+        { authToken: creds.authToken, ct0: creds.ct0 }, creds._dataDir,
+      );
+    } catch { /* best-effort */ }
+    return;
+  }
   if (!creds._account) return; // no account context to attach the marker to
   try {
     await markCredentialInvalid(
@@ -51,6 +81,23 @@ async function markCookieInvalid(creds: BridgeCreds, reason: string): Promise<vo
       { authToken: creds.authToken, ct0: creds.ct0 }, creds._dataDir,
     );
   } catch { /* best-effort — never let marker bookkeeping mask the real error */ }
+}
+
+/**
+ * Rewrite an auth-failure message so it's unambiguous which credential tier
+ * died. Own-cookie failures are locally fixable (re-login); the shared
+ * public account is backend-managed and re-login on the CLI side can't fix
+ * it — surfacing the same generic message for both would send users down
+ * the wrong remediation path.
+ */
+function contextualizeAuthError(creds: BridgeCreds, message: string): string {
+  if (creds._credSource === 'public') {
+    return (
+      'The shared public X account session has expired (backend-managed credential — ' +
+      'not fixable by re-logging in locally). Original error: ' + message
+    );
+  }
+  return message;
 }
 
 let _resolvedPython: string | null | undefined = undefined;
@@ -117,17 +164,20 @@ async function runFetch<T>(
       try {
         const parsed = JSON.parse(raw) as CliResponse<T>;
         if (!parsed.ok && parsed.error?.message) {
-          if (AUTH_FAILURE_RE.test(parsed.error.message)) {
+          const isAuthFailure = AUTH_FAILURE_RE.test(parsed.error.message);
+          if (isAuthFailure) {
             await markCookieInvalid(creds, parsed.error.message);
           }
-          throw new Error(parsed.error.message);
+          throw new Error(isAuthFailure ? contextualizeAuthError(creds, parsed.error.message) : parsed.error.message);
         }
       } catch (jsonErr) {
         if (jsonErr instanceof SyntaxError) { /* ignore, fall through */ } else { throw jsonErr; }
       }
     }
     if (AUTH_FAILURE_RE.test(execErr.message ?? '')) {
-      await markCookieInvalid(creds, execErr.message ?? 'HTTP Error 401');
+      const msg = execErr.message ?? 'HTTP Error 401';
+      await markCookieInvalid(creds, msg);
+      throw new Error(contextualizeAuthError(creds, msg));
     }
     throw err;
   }

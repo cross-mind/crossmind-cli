@@ -12,7 +12,7 @@
  */
 
 import { xRequest, type XCredentials } from '../../http/x-client.js';
-import { loadXCredentials } from '../../auth/x.js';
+import { loadXCredentials, loadXCredentialCandidates, type ResolvedXCredential } from '../../auth/x.js';
 import {
   isCookieClientAvailable,
   bridgeSearchTweets,
@@ -106,6 +106,88 @@ function hasCookieAuth(creds: XCredentials | null): creds is XCredentials & { au
   return !!(creds?.authToken && creds?.ct0);
 }
 
+// ── Progressive credential cascade ("逐级降权") ──────────────────────────────
+
+/** Matches auth-failure messages surfaced by the bridge or REST layer, so a
+ *  failure of one credential tier can trigger a fallback to the next instead
+ *  of being reported as a hard stop. */
+const AUTH_FAILURE_RE = /HTTP Error 401|HTTP 401|Could not authenticate you|session invalid or expired|X OAuth token missing or expired/i;
+
+function isAuthFailure(err: unknown): boolean {
+  return err instanceof AuthError || AUTH_FAILURE_RE.test((err as Error)?.message ?? '');
+}
+
+const TIER_LABEL: Record<ResolvedXCredential['_credSource'], string> = {
+  own: 'your X account session',
+  public: 'the shared public X account',
+  oauth: 'your X OAuth token',
+};
+
+/**
+ * First-trigger-per-process notification: the first time a given tier→tier
+ * degradation is observed in this CLI invocation, tell the caller which
+ * account/tier failed and which one it's falling back to, instead of
+ * silently swallowing the failure. Deduped so a paginated loop hitting the
+ * same dead tier repeatedly doesn't spam the same line.
+ */
+const _degradeNotified = new Set<string>();
+function notifyDegrade(from: ResolvedXCredential['_credSource'], to: ResolvedXCredential['_credSource'] | undefined, reason: string): void {
+  const key = `${from}->${to ?? 'none'}`;
+  if (_degradeNotified.has(key)) return;
+  _degradeNotified.add(key);
+  const fromLabel = TIER_LABEL[from];
+  if (to) {
+    console.error(`[x] ${fromLabel} is invalid (${reason}) — degrading to ${TIER_LABEL[to]}.`);
+  } else {
+    console.error(`[x] ${fromLabel} is invalid (${reason}) — no further fallback credential available.`);
+  }
+}
+
+/**
+ * Try each resolved credential candidate in priority order (own cookie →
+ * public cookie → OAuth). For each candidate: use the bridge if it's a
+ * cookie and the bridge is available, otherwise use the REST path. On an
+ * auth failure, notify once and move to the next candidate rather than
+ * stopping at whichever tier happened to resolve first. Non-auth errors
+ * (network, rate limit, etc.) are not cascaded — they propagate immediately.
+ * Once candidates are exhausted, makes one final unauthenticated/public REST
+ * attempt (matches the pre-cascade behavior of always having a public
+ * fallback available for search-like ops).
+ */
+type CookieCred = ResolvedXCredential & { authToken: string; ct0: string };
+
+async function cascadeRead<T>(
+  candidates: ResolvedXCredential[],
+  bridgeFn: ((c: CookieCred) => Promise<T>) | null,
+  restFn: (c: ResolvedXCredential | null) => Promise<T>,
+): Promise<T> {
+  const bridgeAvailable = bridgeFn ? await isCookieClientAvailable() : false;
+  let lastErr: unknown;
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    const isCookie = !!(c.authToken && c.ct0);
+    try {
+      if (isCookie && bridgeAvailable) {
+        return await bridgeFn!(c as CookieCred);
+      } else if (c.accessToken || c.bearerToken) {
+        return await restFn(c);
+      } else {
+        continue;
+      }
+    } catch (err) {
+      lastErr = err;
+      if (!isAuthFailure(err)) throw err;
+      const next = candidates[i + 1];
+      notifyDegrade(c._credSource, next?._credSource, (err as Error).message ?? String(err));
+    }
+  }
+  try {
+    return await restFn(null);
+  } catch (err) {
+    throw lastErr ?? err;
+  }
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /** Search recent tweets (last 7 days). */
@@ -115,38 +197,39 @@ export async function searchTweets(
   account?: string,
   dataDir?: string
 ): Promise<XTweet[]> {
-  const creds = await loadXCredentials(account, dataDir, 'search');
+  const candidates = await loadXCredentialCandidates(account, dataDir, 'search');
 
-  // Cookie auth → x-fetch.py bridge (Chrome TLS via curl_cffi)
-  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
-    return bridgeSearchTweets(query, limit, creds);
-  }
+  return cascadeRead(
+    candidates,
+    (c) => bridgeSearchTweets(query, limit, c),
+    async (c) => {
+      // Token / no-auth → v2 REST (uses env X_BEARER_TOKEN or public fallback)
+      const params = new URLSearchParams({
+        query,
+        max_results: String(Math.min(limit, 100)),
+        'tweet.fields': 'created_at,public_metrics,author_id',
+        'user.fields': 'id,username,name,profile_image_url',
+        expansions: 'author_id',
+      });
 
-  // Token / no-auth → v2 REST (uses env X_BEARER_TOKEN or public fallback)
-  const params = new URLSearchParams({
-    query,
-    max_results: String(Math.min(limit, 100)),
-    'tweet.fields': 'created_at,public_metrics,author_id',
-    'user.fields': 'id,username,name,profile_image_url',
-    expansions: 'author_id',
-  });
+      const data = await xRequest<{
+        data?: Record<string, unknown>[];
+        includes?: { users?: Record<string, unknown>[] };
+      }>(`/2/tweets/search/recent?${params}`, {
+        creds: c ?? undefined,
+      });
 
-  const data = await xRequest<{
-    data?: Record<string, unknown>[];
-    includes?: { users?: Record<string, unknown>[] };
-  }>(`/2/tweets/search/recent?${params}`, {
-    creds: creds ?? undefined,
-  });
+      const tweets = data.data ?? [];
+      const users = data.includes?.users ?? [];
+      const userMap: Record<string, Record<string, unknown>> = {};
+      for (const u of users) userMap[String(u['id'])] = u;
 
-  const tweets = data.data ?? [];
-  const users = data.includes?.users ?? [];
-  const userMap: Record<string, Record<string, unknown>> = {};
-  for (const u of users) userMap[String(u['id'])] = u;
-
-  return tweets.slice(0, limit).map((t, i) => {
-    const author = userMap[String(t['author_id'])] ?? {};
-    return mapTweetRest(t, author, i);
-  });
+      return tweets.slice(0, limit).map((t, i) => {
+        const author = userMap[String(t['author_id'])] ?? {};
+        return mapTweetRest(t, author, i);
+      });
+    },
+  );
 }
 
 /** Get a user's timeline (most recent tweets). */
@@ -156,32 +239,32 @@ export async function getUserTimeline(
   account?: string,
   dataDir?: string
 ): Promise<XTweet[]> {
-  const creds = await loadXCredentials(account, dataDir, 'timeline');
+  const candidates = await loadXCredentialCandidates(account, dataDir, 'timeline');
 
-  // Cookie auth → x-fetch.py bridge
-  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
-    return bridgeUserTimeline(username, limit, creds);
-  }
+  return cascadeRead(
+    candidates,
+    (c) => bridgeUserTimeline(username, limit, c),
+    async (c) => {
+      const userResp = await xRequest<{ data: { id: string; username: string } }>(
+        `/2/users/by/username/${username}?user.fields=id,username`,
+        { creds: c ?? undefined }
+      );
+      const userId = userResp.data.id;
 
-  // v2 REST path
-  const userResp = await xRequest<{ data: { id: string; username: string } }>(
-    `/2/users/by/username/${username}?user.fields=id,username`,
-    { creds: creds ?? undefined }
+      const params = new URLSearchParams({
+        max_results: String(Math.min(limit, 100)),
+        'tweet.fields': 'created_at,public_metrics',
+        exclude: 'retweets,replies',
+      });
+
+      const data = await xRequest<{ data?: Record<string, unknown>[] }>(
+        `/2/users/${userId}/tweets?${params}`,
+        { creds: c ?? undefined }
+      );
+
+      return (data.data ?? []).slice(0, limit).map((t, i) => mapTweetRest(t, { username }, i));
+    },
   );
-  const userId = userResp.data.id;
-
-  const params = new URLSearchParams({
-    max_results: String(Math.min(limit, 100)),
-    'tweet.fields': 'created_at,public_metrics',
-    exclude: 'retweets,replies',
-  });
-
-  const data = await xRequest<{ data?: Record<string, unknown>[] }>(
-    `/2/users/${userId}/tweets?${params}`,
-    { creds: creds ?? undefined }
-  );
-
-  return (data.data ?? []).slice(0, limit).map((t, i) => mapTweetRest(t, { username }, i));
 }
 
 /** Get a user's profile. */
@@ -190,23 +273,23 @@ export async function getUserProfile(
   account?: string,
   dataDir?: string
 ): Promise<XUser | null> {
-  const creds = await loadXCredentials(account, dataDir, 'profile');
+  const candidates = await loadXCredentialCandidates(account, dataDir, 'profile');
 
-  // Cookie auth → x-fetch.py bridge
-  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
-    return bridgeUserProfile(username, creds);
-  }
+  return cascadeRead(
+    candidates,
+    (c) => bridgeUserProfile(username, c),
+    async (c) => {
+      const params = 'user.fields=id,description,public_metrics,verified,entities,profile_image_url';
+      const data = await xRequest<{ data?: Record<string, unknown> }>(
+        `/2/users/by/username/${username}?${params}`,
+        { creds: c ?? undefined }
+      );
 
-  // v2 REST path
-  const params = 'user.fields=id,description,public_metrics,verified,entities,profile_image_url';
-  const data = await xRequest<{ data?: Record<string, unknown> }>(
-    `/2/users/by/username/${username}?${params}`,
-    { creds: creds ?? undefined }
+      const u = data.data;
+      if (!u) return null;
+      return mapUserRest(u, 1);
+    },
   );
-
-  const u = data.data;
-  if (!u) return null;
-  return mapUserRest(u, 1);
 }
 
 /** Resolve a numeric rest_id → profile (P1 bidirectional lookup). */
@@ -215,22 +298,22 @@ export async function getUserById(
   account?: string,
   dataDir?: string
 ): Promise<XUser | null> {
-  const creds = await loadXCredentials(account, dataDir, 'user');
+  const candidates = await loadXCredentialCandidates(account, dataDir, 'user');
 
-  // Cookie auth → x-fetch.py bridge
-  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
-    return bridgeUserById(restId, creds);
-  }
-
-  // v2 REST path
-  const params = 'user.fields=id,description,public_metrics,verified,profile_image_url';
-  const data = await xRequest<{ data?: Record<string, unknown> }>(
-    `/2/users/${restId}?${params}`,
-    { creds: creds ?? undefined }
+  return cascadeRead(
+    candidates,
+    (c) => bridgeUserById(restId, c),
+    async (c) => {
+      const params = 'user.fields=id,description,public_metrics,verified,profile_image_url';
+      const data = await xRequest<{ data?: Record<string, unknown> }>(
+        `/2/users/${restId}?${params}`,
+        { creds: c ?? undefined }
+      );
+      const u = data.data;
+      if (!u) return null;
+      return mapUserRest(u, 1);
+    },
   );
-  const u = data.data;
-  if (!u) return null;
-  return mapUserRest(u, 1);
 }
 
 /** Get home timeline (cookie or OAuth required). */
@@ -239,41 +322,42 @@ export async function getHomeTimeline(
   account?: string,
   dataDir?: string
 ): Promise<XTweet[]> {
-  const creds = await loadXCredentials(account, dataDir);
+  // Home is identity-tied (never eligible for the shared public account) —
+  // candidates here are own-cookie then OAuth only.
+  const candidates = await loadXCredentialCandidates(account, dataDir);
 
-  // Cookie auth → x-fetch.py bridge
-  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
-    return bridgeFeed(limit, creds);
-  }
+  return cascadeRead(
+    candidates,
+    (c) => bridgeFeed(limit, c),
+    async (c) => {
+      if (!c?.accessToken) {
+        throw new Error('Home timeline requires X authentication. Run: crossmind auth login x');
+      }
+      const params = new URLSearchParams({
+        max_results: String(Math.min(limit, 100)),
+        'tweet.fields': 'created_at,public_metrics,author_id',
+        'user.fields': 'id,username,name,profile_image_url',
+        expansions: 'author_id',
+      });
 
-  // OAuth access token → v2 REST home timeline
-  if (creds?.accessToken) {
-    const params = new URLSearchParams({
-      max_results: String(Math.min(limit, 100)),
-      'tweet.fields': 'created_at,public_metrics,author_id',
-      'user.fields': 'id,username,name,profile_image_url',
-      expansions: 'author_id',
-    });
+      const data = await xRequest<{
+        data?: Record<string, unknown>[];
+        includes?: { users?: Record<string, unknown>[] };
+      }>(`/2/timelines/home?${params}`, {
+        creds: c,
+      });
 
-    const data = await xRequest<{
-      data?: Record<string, unknown>[];
-      includes?: { users?: Record<string, unknown>[] };
-    }>(`/2/timelines/home?${params}`, {
-      creds,
-    });
+      const tweets = data.data ?? [];
+      const users = data.includes?.users ?? [];
+      const userMap: Record<string, Record<string, unknown>> = {};
+      for (const u of users) userMap[String(u['id'])] = u;
 
-    const tweets = data.data ?? [];
-    const users = data.includes?.users ?? [];
-    const userMap: Record<string, Record<string, unknown>> = {};
-    for (const u of users) userMap[String(u['id'])] = u;
-
-    return tweets.slice(0, limit).map((t, i) => {
-      const author = userMap[String(t['author_id'])] ?? {};
-      return mapTweetRest(t, author, i);
-    });
-  }
-
-  throw new Error('Home timeline requires X authentication. Run: crossmind auth login x');
+      return tweets.slice(0, limit).map((t, i) => {
+        const author = userMap[String(t['author_id'])] ?? {};
+        return mapTweetRest(t, author, i);
+      });
+    },
+  );
 }
 
 // ── Phase 2 read additions ─────────────────────────────────────────────────
@@ -299,25 +383,26 @@ export async function getTweet(
   account?: string,
   dataDir?: string
 ): Promise<XTweetThread> {
-  const creds = await loadXCredentials(account, dataDir, 'thread');
+  const candidates = await loadXCredentialCandidates(account, dataDir, 'thread');
 
-  // Cookie auth → x-fetch.py bridge
-  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
-    return bridgeTweet(tweetId, limit, creds);
-  }
+  return cascadeRead(
+    candidates,
+    (c) => bridgeTweet(tweetId, limit, c),
+    async (c) => {
+      // REST v2 fallback: fetch tweet only (no thread traversal without elevated access)
+      const params = 'tweet.fields=created_at,public_metrics,author_id&expansions=author_id&user.fields=id,username,name,profile_image_url';
+      const data = await xRequest<{
+        data: Record<string, unknown>;
+        includes?: { users?: Record<string, unknown>[] };
+      }>(`/2/tweets/${tweetId}?${params}`, { creds: c ?? undefined });
 
-  // REST v2 fallback: fetch tweet only (no thread traversal without elevated access)
-  const params = 'tweet.fields=created_at,public_metrics,author_id&expansions=author_id&user.fields=id,username,name,profile_image_url';
-  const data = await xRequest<{
-    data: Record<string, unknown>;
-    includes?: { users?: Record<string, unknown>[] };
-  }>(`/2/tweets/${tweetId}?${params}`, { creds: creds ?? undefined });
-
-  const users = data.includes?.users ?? [];
-  const userMap: Record<string, Record<string, unknown>> = {};
-  for (const u of users) userMap[String(u['id'])] = u;
-  const author = userMap[String(data.data['author_id'])] ?? {};
-  return { tweet: mapTweetRest(data.data, author, 0), thread: [] };
+      const users = data.includes?.users ?? [];
+      const userMap: Record<string, Record<string, unknown>> = {};
+      for (const u of users) userMap[String(u['id'])] = u;
+      const author = userMap[String(data.data['author_id'])] ?? {};
+      return { tweet: mapTweetRest(data.data, author, 0), thread: [] };
+    },
+  );
 }
 
 /** Get a user's followers. */
@@ -327,27 +412,28 @@ export async function getFollowers(
   account?: string,
   dataDir?: string
 ): Promise<XUser[]> {
-  const creds = await loadXCredentials(account, dataDir, 'followers');
+  const candidates = await loadXCredentialCandidates(account, dataDir, 'followers');
 
-  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
-    return bridgeFollowers(username, limit, creds);
-  }
-
-  // REST v2
-  const userResp = await xRequest<{ data: { id: string } }>(
-    `/2/users/by/username/${username}`,
-    { creds: creds ?? undefined }
+  return cascadeRead(
+    candidates,
+    (c) => bridgeFollowers(username, limit, c),
+    async (c) => {
+      const userResp = await xRequest<{ data: { id: string } }>(
+        `/2/users/by/username/${username}`,
+        { creds: c ?? undefined }
+      );
+      const userId = userResp.data.id;
+      const params = new URLSearchParams({
+        max_results: String(Math.min(limit, 1000)),
+        'user.fields': 'id,username,name,public_metrics,description,verified,profile_image_url',
+      });
+      const data = await xRequest<{ data?: Record<string, unknown>[] }>(
+        `/2/users/${userId}/followers?${params}`,
+        { creds: c ?? undefined }
+      );
+      return (data.data ?? []).slice(0, limit).map((u, i) => mapUserRest(u, i));
+    },
   );
-  const userId = userResp.data.id;
-  const params = new URLSearchParams({
-    max_results: String(Math.min(limit, 1000)),
-    'user.fields': 'id,username,name,public_metrics,description,verified,profile_image_url',
-  });
-  const data = await xRequest<{ data?: Record<string, unknown>[] }>(
-    `/2/users/${userId}/followers?${params}`,
-    { creds: creds ?? undefined }
-  );
-  return (data.data ?? []).slice(0, limit).map((u, i) => mapUserRest(u, i));
 }
 
 /** Get accounts a user follows. */
@@ -357,26 +443,28 @@ export async function getFollowing(
   account?: string,
   dataDir?: string
 ): Promise<XUser[]> {
-  const creds = await loadXCredentials(account, dataDir, 'following');
+  const candidates = await loadXCredentialCandidates(account, dataDir, 'following');
 
-  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
-    return bridgeFollowing(username, limit, creds);
-  }
-
-  const userResp = await xRequest<{ data: { id: string } }>(
-    `/2/users/by/username/${username}`,
-    { creds: creds ?? undefined }
+  return cascadeRead(
+    candidates,
+    (c) => bridgeFollowing(username, limit, c),
+    async (c) => {
+      const userResp = await xRequest<{ data: { id: string } }>(
+        `/2/users/by/username/${username}`,
+        { creds: c ?? undefined }
+      );
+      const userId = userResp.data.id;
+      const params = new URLSearchParams({
+        max_results: String(Math.min(limit, 1000)),
+        'user.fields': 'id,username,name,public_metrics,description,verified,profile_image_url',
+      });
+      const data = await xRequest<{ data?: Record<string, unknown>[] }>(
+        `/2/users/${userId}/following?${params}`,
+        { creds: c ?? undefined }
+      );
+      return (data.data ?? []).slice(0, limit).map((u, i) => mapUserRest(u, i));
+    },
   );
-  const userId = userResp.data.id;
-  const params = new URLSearchParams({
-    max_results: String(Math.min(limit, 1000)),
-    'user.fields': 'id,username,name,public_metrics,description,verified,profile_image_url',
-  });
-  const data = await xRequest<{ data?: Record<string, unknown>[] }>(
-    `/2/users/${userId}/following?${params}`,
-    { creds: creds ?? undefined }
-  );
-  return (data.data ?? []).slice(0, limit).map((u, i) => mapUserRest(u, i));
 }
 
 /** Get bookmarks (cookie required). */
@@ -425,31 +513,32 @@ export async function getListTweets(
   account?: string,
   dataDir?: string
 ): Promise<XTweet[]> {
-  const creds = await loadXCredentials(account, dataDir);
+  const candidates = await loadXCredentialCandidates(account, dataDir);
 
-  if (hasCookieAuth(creds) && await isCookieClientAvailable()) {
-    return bridgeListTweets(listId, limit, creds);
-  }
+  return cascadeRead(
+    candidates,
+    (c) => bridgeListTweets(listId, limit, c),
+    async (c) => {
+      const params = new URLSearchParams({
+        max_results: String(Math.min(limit, 100)),
+        'tweet.fields': 'created_at,public_metrics,author_id',
+        'user.fields': 'id,username,name,profile_image_url',
+        expansions: 'author_id',
+      });
+      const data = await xRequest<{
+        data?: Record<string, unknown>[];
+        includes?: { users?: Record<string, unknown>[] };
+      }>(`/2/lists/${listId}/tweets?${params}`, { creds: c ?? undefined });
 
-  // REST v2 fallback
-  const params = new URLSearchParams({
-    max_results: String(Math.min(limit, 100)),
-    'tweet.fields': 'created_at,public_metrics,author_id',
-    'user.fields': 'id,username,name,profile_image_url',
-    expansions: 'author_id',
-  });
-  const data = await xRequest<{
-    data?: Record<string, unknown>[];
-    includes?: { users?: Record<string, unknown>[] };
-  }>(`/2/lists/${listId}/tweets?${params}`, { creds: creds ?? undefined });
-
-  const users = data.includes?.users ?? [];
-  const userMap: Record<string, Record<string, unknown>> = {};
-  for (const u of users) userMap[String(u['id'])] = u;
-  return (data.data ?? []).slice(0, limit).map((t, i) => {
-    const author = userMap[String(t['author_id'])] ?? {};
-    return mapTweetRest(t, author, i);
-  });
+      const users = data.includes?.users ?? [];
+      const userMap: Record<string, Record<string, unknown>> = {};
+      for (const u of users) userMap[String(u['id'])] = u;
+      return (data.data ?? []).slice(0, limit).map((t, i) => {
+        const author = userMap[String(t['author_id'])] ?? {};
+        return mapTweetRest(t, author, i);
+      });
+    },
+  );
 }
 
 /** Get a user's liked tweets. */

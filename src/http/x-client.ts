@@ -57,6 +57,7 @@ export interface XCredentials {
   accessToken?: string; // OAuth 2.0 user access token (v2 REST, user context)
   _account?: string;    // account name in the credential store, for invalid-marker bookkeeping
   _dataDir?: string;
+  _credSource?: 'own' | 'public' | 'oauth'; // which tier this cookie/token was resolved from
 }
 
 /** Build headers for v2 REST API calls (api.twitter.com). */

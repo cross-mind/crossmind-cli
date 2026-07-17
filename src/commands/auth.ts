@@ -9,7 +9,7 @@ import { loginReddit, saveRedditCookies, loadRedditCredentials } from '../auth/r
 import { loginBluesky } from '../auth/bluesky.js';
 import { saveGitHubToken } from '../auth/github.js';
 import { saveCredential, listAccounts, removeCredential, getDefaultAccount, loadCredential, resolveAccount, fingerprintValue } from '../auth/store.js';
-import { isCookieClientAvailable } from '../http/x-bridge.js';
+import { isCookieClientAvailable, PUBLIC_TIER_ACCOUNT } from '../http/x-bridge.js';
 import { isRedditClientAvailable } from '../http/reddit-bridge.js';
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
@@ -225,6 +225,11 @@ Examples:
         return `  ${mark}  ${label}${pad}${detail}`;
       }
 
+      function historyLines(history: { reason: string; at: string }[] | undefined): string[] {
+        if (!history || history.length === 0) return [];
+        return history.map((h) => `         - ${h.at}  ${h.reason}`);
+      }
+
       function opList(ops: string[]): string[] {
         // Wrap at ~70 chars
         const lines: string[] = [];
@@ -281,6 +286,10 @@ Examples:
         console.log(credLine('Cookie (auth_token + ct0)', hasCookie,
           hasCookie ? `${cookieSrc}` : 'not configured'));
       }
+      if (xCred?.invalidCookieHistory && xCred.invalidCookieHistory.length > 0) {
+        console.log(`       history (${xCred.invalidCookieHistory.length} past invalidation${xCred.invalidCookieHistory.length > 1 ? 's' : ''}):`);
+        for (const line of historyLines(xCred.invalidCookieHistory)) console.log(line);
+      }
       if (oauthInvalid) {
         console.log(credLine('OAuth (access_token)', false,
           `INVALID — ${oauthInvalid.reason} (since ${oauthInvalid.at}) — needs re-login`));
@@ -288,9 +297,29 @@ Examples:
         console.log(credLine('OAuth (access_token)', hasOAuth,
           hasOAuth ? `${oauthSrc}` : 'not configured'));
       }
+      if (xCred?.invalidOAuthHistory && xCred.invalidOAuthHistory.length > 0) {
+        console.log(`       history (${xCred.invalidOAuthHistory.length} past invalidation${xCred.invalidOAuthHistory.length > 1 ? 's' : ''}):`);
+        for (const line of historyLines(xCred.invalidOAuthHistory)) console.log(line);
+      }
       if (hasCookie) {
         console.log(credLine('Bridge (Python + curl_cffi)', xBridgeOk,
           xBridgeOk ? 'available' : 'not found — install: uv pip install curl_cffi'));
+      }
+
+      // Shared public account (backend-managed fallback tier) — only shown once
+      // it has ever failed, so a healthy history-less account doesn't clutter status.
+      const publicCred = await loadCredential('x', PUBLIC_TIER_ACCOUNT, opts.dataDir);
+      if (publicCred?.invalidCookie || (publicCred?.invalidCookieHistory && publicCred.invalidCookieHistory.length > 0)) {
+        console.log(`\n  Shared public X account (backend-managed, degrades to when your own credentials fail):`);
+        if (publicCred.invalidCookie) {
+          console.log(`  ${warn}  currently INVALID — ${publicCred.invalidCookie.reason} (since ${publicCred.invalidCookie.at})`);
+        } else {
+          console.log(`  ${tick}  currently OK`);
+        }
+        if (publicCred.invalidCookieHistory && publicCred.invalidCookieHistory.length > 0) {
+          console.log(`       history (${publicCred.invalidCookieHistory.length} past invalidation${publicCred.invalidCookieHistory.length > 1 ? 's' : ''}):`);
+          for (const line of historyLines(publicCred.invalidCookieHistory)) console.log(line);
+        }
       }
 
       if (!hasCookie && !hasOAuth) {

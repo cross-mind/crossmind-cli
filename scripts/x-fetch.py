@@ -507,6 +507,46 @@ def _gql_url(operation: str, variables: Dict[str, Any], features: Optional[Dict[
         f"&features={urllib.parse.quote(json.dumps(feat, separators=(',', ':')))}"
     )
 
+def _is_guest_downgrade(resp: Any) -> bool:
+    """True if X silently treated this request as an unauthenticated guest.
+
+    X issues fresh guest_id/guest_id_marketing/guest_id_ads cookies the first
+    time in a session that it did not recognize auth_token/ct0 as a live
+    login session — but only on that first response. The session's cookie
+    jar then carries guest_id on every request after that (including the
+    in-process retry _gql_get/_gql_post do on 400/403/404), so a later
+    response in the same run may 404 as a guest with no fresh Set-Cookie at
+    all. Check both: this response's own Set-Cookie, and the session cookie
+    jar (which persists once guest_id has been established this run).
+    """
+    set_cookie = resp.headers.get("set-cookie", "") if hasattr(resp, "headers") else ""
+    if isinstance(set_cookie, list):
+        set_cookie = "; ".join(set_cookie)
+    if "guest_id=" in set_cookie or "guest_id_marketing=" in set_cookie:
+        return True
+    try:
+        session_cookies = _get_session().cookies
+        return "guest_id" in session_cookies or "guest_id_marketing" in session_cookies
+    except Exception:
+        return False
+
+def _raise_session_expired(operation: str, resp: Any) -> None:
+    raise RuntimeError(
+        f"Could not authenticate you: X session invalid or expired — the "
+        f"{operation} request was silently downgraded to a guest/anonymous "
+        f"session (auth_token/ct0 no longer recognized as logged in, HTTP "
+        f"{resp.status_code}). Re-authenticate."
+    )
+
+def _check_session_auth_error(operation: str, resp: Any) -> None:
+    """Raise a clear, distinguishable error if this response indicates a dead
+    cookie session, instead of letting it fall through to a bare HTTP error
+    (400/403/404) that looks like a stale-queryId problem."""
+    if resp.status_code == 401:
+        _raise_session_expired(operation, resp)
+    if resp.status_code == 404 and _is_guest_downgrade(resp):
+        _raise_session_expired(operation, resp)
+
 def _gql_get(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
     url = _gql_url(operation, variables)
     path = urllib.parse.urlparse(url).path
@@ -517,6 +557,7 @@ def _gql_get(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
         url = _gql_url(operation, variables)
         path = urllib.parse.urlparse(url).path
         resp = _retry_on_tls(lambda: _get_session().get(url, headers=_headers(path=path, method="GET"), timeout=20))
+    _check_session_auth_error(operation, resp)
     resp.raise_for_status()
     return resp.json()
 
@@ -538,6 +579,7 @@ def _gql_post(operation: str, variables: Dict[str, Any]) -> Dict[str, Any]:
         path = f"/i/api/graphql/{qid}/{operation}"
         body["queryId"] = qid
         resp = _retry_on_tls(lambda: _get_session().post(url, headers=_headers(path=path, method="POST"), json=body, timeout=20))
+    _check_session_auth_error(operation, resp)
     resp.raise_for_status()
     data = resp.json()
     errors = data.get("errors")

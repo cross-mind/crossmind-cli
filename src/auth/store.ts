@@ -43,6 +43,33 @@ export interface Credential {
   redditLoid?: string;     // loid cookie for Reddit
   invalidCookie?: InvalidMarker; // set when authToken/ct0 was confirmed dead by the API
   invalidOAuth?: InvalidMarker;  // set when accessToken was confirmed dead by the API
+  /**
+   * Bounded history of past invalidCookie/invalidOAuth markers (most recent last),
+   * kept even after the tier is fixed or the current marker self-heals, so `auth
+   * status` can answer "when did each tier actually go dead, historically" rather
+   * than only showing the single most-recent event.
+   */
+  invalidCookieHistory?: InvalidMarker[];
+  invalidOAuthHistory?: InvalidMarker[];
+}
+
+/** How many past invalidation events to retain per tier, per account. */
+const INVALID_HISTORY_LIMIT = 10;
+
+/**
+ * Append a marker to a bounded history, collapsing consecutive entries for the
+ * same ongoing failure (same reason + value) into one updated-timestamp entry
+ * instead of spamming duplicates on every retry within the same outage.
+ */
+function appendInvalidHistory(history: InvalidMarker[] | undefined, marker: InvalidMarker): InvalidMarker[] {
+  const next = history ? [...history] : [];
+  const last = next[next.length - 1];
+  if (last && last.reason === marker.reason && last.valueHash === marker.valueHash) {
+    next[next.length - 1] = marker; // same ongoing failure — refresh timestamp only
+  } else {
+    next.push(marker);
+  }
+  return next.slice(-INVALID_HISTORY_LIMIT);
 }
 
 /** Cheap non-reversible fingerprint of a secret value, for marker/refresh comparison only. */
@@ -146,10 +173,12 @@ export async function markCredentialInvalid(
     delete next.authToken;
     delete next.ct0;
     next.invalidCookie = marker;
+    next.invalidCookieHistory = appendInvalidHistory(existing?.invalidCookieHistory, marker);
   } else {
     marker.valueHash = fingerprintValue(failedValue.accessToken);
     delete next.accessToken;
     next.invalidOAuth = marker;
+    next.invalidOAuthHistory = appendInvalidHistory(existing?.invalidOAuthHistory, marker);
   }
   await persistCredential(next, dir);
 }
