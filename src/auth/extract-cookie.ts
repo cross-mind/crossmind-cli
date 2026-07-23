@@ -262,13 +262,46 @@ function cleanStaleLockFiles(profileDir: string): void {
   }
 }
 
+/** Chrome's cookie DB lives at Default/Cookies, or Default/Network/Cookies on newer versions. */
+function findCookiesFile(profileDir: string): string | undefined {
+  const candidates = [
+    path.join(profileDir, 'Default', 'Network', 'Cookies'),
+    path.join(profileDir, 'Default', 'Cookies'),
+  ];
+  return candidates.find((p) => fs.existsSync(p));
+}
+
 /**
- * Check if profile has a Default/Cookies database.
+ * Check if profile has a cookies database.
  * Returns true if cookies file exists.
  */
 function hasCookiesDatabase(profileDir: string): boolean {
-  const cookiesFile = path.join(profileDir, 'Default', 'Cookies');
-  return fs.existsSync(cookiesFile);
+  return findCookiesFile(profileDir) !== undefined;
+}
+
+/**
+ * Snapshot just the cookies database of a profile that's locked by another
+ * live browser process into an isolated, unlocked directory, so extraction
+ * can proceed against the copy without touching (or needing to close) the
+ * live browser. Caller is responsible for removing the returned directory
+ * once done.
+ */
+function snapshotProfileCookies(platformKey: string, profileDir: string): string {
+  const src = findCookiesFile(profileDir);
+  if (!src) {
+    throw new Error(
+      `Profile is locked by another browser instance and has no cookies database to snapshot.\n` +
+      `  Profile: ${profileDir}\n` +
+      `  Close the browser using this profile and try again.`
+    );
+  }
+  const snapshotDir = path.join(
+    os.tmpdir(), 'crossmind-cookie-snapshot', `${platformKey}-${Date.now()}-${process.pid}`
+  );
+  const destDir = path.join(snapshotDir, 'Default');
+  fs.mkdirSync(destDir, { recursive: true });
+  fs.copyFileSync(src, path.join(destDir, 'Cookies'));
+  return snapshotDir;
 }
 
 /**
@@ -281,6 +314,10 @@ function hasCookiesDatabase(profileDir: string): boolean {
  *                       When false (default), fail fast if not logged in.
  * @param profileDir   - Explicit browser profile directory. Falls back to
  *                       BROWSER_USER_DATA_DIR env var, then a default local path.
+ *                       If this directory is locked by another live browser
+ *                       process (headless mode only), its cookies database is
+ *                       automatically snapshotted into a temporary unlocked
+ *                       copy and extraction proceeds from there.
  */
 export async function extractAndSaveCookies(
   platformKey: string,
@@ -330,36 +367,56 @@ export async function extractAndSaveCookies(
 
   // ── Profile path: local Chrome with persistent profile ───────────────────
   const profile = resolveProfileDir(platformKey, profileDir);
+  const runner = headed ? extractHeaded : extractHeadless;
+  const lockedUpfront = isProfileLocked(profile);
 
-  if (headed) {
-    // Headed mode: launch a visible browser for first-time / re-login.
-    // No pre-existing profile required — Chrome will create it on first run.
-    if (isProfileLocked(profile)) {
-      throw new Error(
-        `Profile is locked by another browser instance.\n` +
-        `  Profile: ${profile}\n` +
-        `  Close the browser using this profile and try again.`
-      );
-    }
-    await extractHeaded(target, accountName, dataDir, profile);
-  } else {
-    // Headless mode: reuse an existing session saved to the profile.
-    if (isProfileLocked(profile)) {
-      throw new Error(
-        `Profile is locked by another browser instance.\n` +
-        `  Profile: ${profile}\n` +
-        `  Close the browser using this profile and try again.`
-      );
-    }
-    if (!hasCookiesDatabase(profile)) {
-      throw new Error(
-        `No cookies database found in profile.\n` +
-        `  Profile: ${profile}\n` +
-        `  Please log in to ${platformKey} first using a browser with this profile.`
-      );
-    }
-    await extractHeadless(target, accountName, dataDir, profile);
+  if (!headed && !lockedUpfront && !hasCookiesDatabase(profile)) {
+    throw new Error(
+      `No cookies database found in profile.\n` +
+      `  Profile: ${profile}\n` +
+      `  Please log in to ${platformKey} first using a browser with this profile.`
+    );
   }
+
+  // Two ways a lock conflict can surface:
+  //  1. Our own pre-flight PID probe (isProfileLocked) catches it upfront —
+  //     skip straight to the snapshot fallback, no point launching a guaranteed
+  //     failure.
+  //  2. Chrome's own process-singleton check only catches it at launch time —
+  //     this is the only reliable signal when the lock-owning process lives in
+  //     a different PID namespace than this CLI (e.g. an MCP-managed browser
+  //     container), where kill(pid, 0) can't see it and falsely reports "not
+  //     locked" upfront.
+  // Either way, don't fail: snapshot just the cookies database into an
+  // isolated, unlocked directory and extract from that copy instead — the
+  // live browser's own profile is never touched and never needs closing.
+  if (!lockedUpfront) {
+    try {
+      await runner(target, accountName, dataDir, profile);
+      return;
+    } catch (err) {
+      if (!isProfileLockLaunchError(err)) throw err;
+    }
+  }
+
+  const snapshot = snapshotProfileCookies(platformKey, profile);
+  try {
+    await runner(target, accountName, dataDir, snapshot);
+  } finally {
+    fs.rmSync(snapshot, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Detects Chrome's own "profile already in use" launch failure text. Playwright
+ * embeds the launched browser's captured stderr into the thrown error message,
+ * so Chrome's process-singleton log line is reliably present here even though
+ * the top-level Playwright error text itself is a generic "target closed".
+ */
+function isProfileLockLaunchError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /profile appears to be in use by another/i.test(msg)
+    || /ProcessSingleton/i.test(msg);
 }
 
 // ── Headless extraction (reuses existing session) ──────────────────────────

@@ -40,7 +40,7 @@ export function registerAuthCommands(program: Command): void {
     .description('Log in to a platform and save credentials')
     .option('--data-dir <dir>', 'Data directory override')
     .option('--token <token>', 'Provide token/API key directly (github, generic)')
-    .option('--cookie <cookie>', 'Provide raw cookie string directly')
+    .option('--cookie <cookie>', 'Provide raw cookie string directly (instagram, linkedin, generic platforms)')
     .option('--auth-token <authToken>', 'X: auth_token cookie value. Use with --ct0. Enables: home feed, bookmarks, notifications.')
     .option('--ct0 <ct0>', 'X: CSRF token (required with --auth-token)')
     .option('--access-token <accessToken>', 'X/LinkedIn: OAuth access token. X enables: tweet, reply, DM, like, follow, analytics, dm-list.')
@@ -117,8 +117,19 @@ export function registerAuthCommands(program: Command): void {
           }
 
           case 'instagram': {
-            console.log(`For instagram, use: crossmind extract-cookie instagram`);
-            process.exit(1);
+            if (opts.cookie) {
+              // Direct cookie auth — e.g. "sessionid=...; csrftoken=..."
+              await saveCredential({
+                platform: 'instagram',
+                name: accountName,
+                cookie: opts.cookie,
+              }, opts.dataDir);
+              console.log(`Instagram cookie saved as "${accountName}".`);
+            } else {
+              console.log(`For instagram, use: crossmind extract-cookie instagram`);
+              console.log(`Or provide a manual cookie: crossmind auth login instagram --cookie "sessionid=<val>; csrftoken=<val>"`);
+              process.exit(1);
+            }
             break;
           }
 
@@ -131,9 +142,18 @@ export function registerAuthCommands(program: Command): void {
                 accessToken: opts.accessToken,
               }, opts.dataDir);
               console.log(`LinkedIn OAuth token saved as "${accountName}".`);
+            } else if (opts.cookie) {
+              // Direct cookie auth — e.g. "li_at=...; JSESSIONID=..."
+              await saveCredential({
+                platform: 'linkedin',
+                name: accountName,
+                cookie: opts.cookie,
+              }, opts.dataDir);
+              console.log(`LinkedIn cookie saved as "${accountName}".`);
             } else {
               // Cookie extraction for read operations (profile, feed)
               console.log(`For LinkedIn cookie auth (profile/feed): crossmind extract-cookie linkedin`);
+              console.log(`Or provide a manual cookie: crossmind auth login linkedin --cookie "li_at=<val>; JSESSIONID=<val>"`);
               console.log(`For LinkedIn posting: crossmind auth login linkedin --access-token <token>`);
               process.exit(1);
             }
@@ -187,6 +207,20 @@ How to get credentials:
     Or copy manually from DevTools:
       Browser → DevTools → Application → Cookies → reddit.com
 
+  Instagram:
+    crossmind extract-cookie instagram
+
+    Or copy manually from DevTools:
+      Browser → DevTools → Application → Cookies → instagram.com
+      crossmind auth login instagram --cookie "sessionid=<val>; csrftoken=<val>"
+
+  LinkedIn:
+    crossmind extract-cookie linkedin
+
+    Or copy manually from DevTools:
+      Browser → DevTools → Application → Cookies → linkedin.com
+      crossmind auth login linkedin --cookie "li_at=<val>; JSESSIONID=<val>"
+
 Examples:
   crossmind extract-cookie x
   crossmind extract-cookie x --headed
@@ -195,6 +229,9 @@ Examples:
 
   crossmind extract-cookie reddit
   crossmind auth login reddit --session-cookie <val>
+
+  crossmind auth login instagram --cookie "sessionid=<val>; csrftoken=<val>"
+  crossmind auth login linkedin --cookie "li_at=<val>; JSESSIONID=<val>"
 `);
 
   // auth logout <platform> [account]
